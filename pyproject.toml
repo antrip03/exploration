@@ -1,0 +1,78 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.backends.legacy:build"
+
+[project]
+name = "grpo-reward-hacking"
+version = "0.1.0"
+description = "Reward Hacking Guardrails and Exploration in Group Relative Policy Optimization (GRPO)"
+readme = "README.md"
+license = { file = "LICENSE" }
+requires-python = ">=3.11"
+authors = [
+    { name = "TODO: Author Name", email = "TODO@email.com" }
+]
+keywords = ["GRPO", "reward hacking", "LLM", "RLHF", "exploration", "LoRA"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3.11",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+
+[project.urls]
+Homepage = "https://github.com/TODO/grpo-reward-hacking"
+Repository = "https://github.com/TODO/grpo-reward-hacking"
+Issues = "https://github.com/TODO/grpo-reward-hacking/issues"
+
+[project.scripts]
+grpo-train = "scripts.train:main"
+grpo-eval  = "scripts.evaluate:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["src*", "scripts*"]
+
+# ---- Black ----
+[tool.black]
+line-length = 100
+target-version = ["py311"]
+include = '\.pyi?$'
+
+# ---- isort ----
+[tool.isort]
+profile = "black"
+line_length = 100
+known_first_party = ["src"]
+
+# ---- mypy ----
+[tool.mypy]
+python_version = "3.11"
+strict = true
+ignore_missing_imports = true
+warn_return_any = true
+warn_unused_configs = true
+
+# ---- pytest ----
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-v --cov=src --cov-report=term-missing --cov-report=html"
+filterwarnings = [
+    "ignore::DeprecationWarning",
+    "ignore::UserWarning",
+]
+
+# ---- coverage ----
+[tool.coverage.run]
+source = ["src"]
+omit = ["tests/*", "scripts/*", "notebooks/*"]
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "def __repr__",
+    "raise NotImplementedError",
+    "if TYPE_CHECKING:",
+    "pass",
+]

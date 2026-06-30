@@ -1,0 +1,115 @@
+# ============================================================
+# GRPO Reward Hacking — .gitignore
+# ============================================================
+
+# ---- Python ----
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyo
+*.pyd
+.Python
+*.egg
+*.egg-info/
+dist/
+build/
+eggs/
+parts/
+var/
+sdist/
+wheels/
+pip-wheel-metadata/
+share/python-wheels/
+*.manifest
+*.spec
+
+# ---- Virtual Environments ----
+.venv/
+venv/
+env/
+ENV/
+.env
+.env.local
+.env.*.local
+
+# ---- Testing & Coverage ----
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+*.cover
+.hypothesis/
+nosetests.xml
+test-results/
+
+# ---- Type Checking ----
+.mypy_cache/
+.dmypy.json
+dmypy.json
+.pytype/
+
+# ---- Experiment Outputs (large files) ----
+outputs/
+!outputs/.gitkeep
+checkpoints/
+runs/
+
+# ---- Model Weights ----
+*.bin
+*.pt
+*.pth
+*.safetensors
+*.ckpt
+*.h5
+
+# ---- Jupyter Notebooks (outputs) ----
+.ipynb_checkpoints/
+# Keep notebooks but strip outputs (use nbstripout)
+# *.ipynb  # Do NOT ignore — we want notebooks tracked
+
+# ---- W&B ----
+wandb/
+
+# ---- TensorBoard ----
+lightning_logs/
+tb_logs/
+
+# ---- IDE ----
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# ---- OS ----
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+
+# ---- Secrets ----
+secrets.yaml
+secrets.json
+.secrets
+*.key
+*.pem
+
+# ---- Data ----
+data/raw/
+data/processed/
+*.csv
+*.parquet
+*.arrow
+*.jsonl
+# Keep small fixture data in tests
+!tests/fixtures/**
+
+# ---- Logs ----
+*.log
+logs/
+!logs/.gitkeep

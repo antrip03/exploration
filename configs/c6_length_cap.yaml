@@ -1,0 +1,25 @@
+# =============================================================
+# c6_length_cap.yaml  —  Condition 6: Hackable reward + hard length cap
+# =============================================================
+# Hackable reward with a hard truncation of reasoning tokens.
+# Tests whether a structural guardrail suppresses exploration.
+
+defaults:
+  - base
+
+experiment:
+  condition_id: "c6_length_cap"
+  description: "Hackable reward + hard reasoning length cap (no KL)"
+  tags: ["hackable", "length-cap", "structural-guardrail"]
+
+reward:
+  type: "guardrailed"
+  answer_reward_weight: 1.0
+  format_reward_weight: 0.3
+  length_bonus_weight: 0.1
+  kl_beta: 0.0                # No KL regularization
+  max_reasoning_tokens: 256   # Hard cap on <think> block tokens
+
+training:
+  output_dir: "outputs/c6_length_cap"
+  seed: 42
