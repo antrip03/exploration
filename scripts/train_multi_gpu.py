@@ -47,6 +47,9 @@ def main() -> None:
         subprocess.run([sys.executable, "-m", "pip", "install", "-q", "accelerate"], check=True)
         print("✓ Accelerate installed")
 
+    repo_root = str(Path(__file__).resolve().parents[1])
+    os.chdir(repo_root)
+
     # Build accelerate launch command
     cmd = [
         sys.executable,
@@ -56,7 +59,9 @@ def main() -> None:
         str(args.num_gpus),
         "--mixed_precision",
         args.mixed_precision,
-        "scripts/train.py",
+        "--main_process_port",
+        "29500",
+        str(Path(repo_root) / "scripts" / "train.py"),
         "--config",
         args.config,
         f"training.per_device_train_batch_size={args.per_device_batch_size}",

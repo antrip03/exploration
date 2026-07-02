@@ -7,18 +7,23 @@ set -e
 CONFIG=${1:-"configs/c1_baseline.yaml"}
 NUM_GPUS=${NUM_GPUS:-2}
 PER_DEVICE_BATCH_SIZE=${PER_DEVICE_BATCH_SIZE:-1}
+REPO_ROOT=$(cd "$(dirname "$0")/.." && pwd)
+
+cd "$REPO_ROOT"
 
 echo "Multi-GPU Training"
 echo "Config: $CONFIG"
 echo "Num GPUs: $NUM_GPUS"
 echo "Per-device batch size: $PER_DEVICE_BATCH_SIZE"
+echo "Repo root: $REPO_ROOT"
 echo ""
 
 # Launch with accelerate
 accelerate launch \
-  --num_processes $NUM_GPUS \
+  --num_processes "$NUM_GPUS" \
   --mixed_precision bf16 \
-  scripts/train.py \
+  --main_process_port 29500 \
+  "$REPO_ROOT/scripts/train.py" \
   --config "$CONFIG" \
   "training.per_device_train_batch_size=$PER_DEVICE_BATCH_SIZE"
 
