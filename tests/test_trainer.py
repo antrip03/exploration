@@ -42,6 +42,12 @@ def test_load_model_can_be_mocked(experiment_config, monkeypatch):
         def parameters(self):
             return []
 
+        def to(self, device):
+            return self
+
+        def eval(self):
+            return self
+
         def save_pretrained(self, *_args, **_kwargs):
             return None
 

@@ -96,12 +96,26 @@ class GRPOExperimentTrainer:
                 **model_kwargs,
             )
 
-        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        self.model.to(device)
+        # For multi-GPU (accelerate), let TRL handle device placement; otherwise place on single device
+        try:
+            from accelerate import Accelerator
+            accelerator = Accelerator()
+            if accelerator.num_processes > 1:
+                logger.info("Multi-GPU detected; deferring device placement to TRL trainer")
+                device_info = f"distributed ({accelerator.num_processes} GPUs)"
+            else:
+                device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+                self.model.to(device)
+                device_info = str(device)
+        except ImportError:
+            device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+            self.model.to(device)
+            device_info = str(device)
+
         self.model.eval()
         self.model.config.use_cache = False
         self._reward_fn = get_reward_fn(self.cfg.reward, tokenizer=self.tokenizer)
-        logger.info("Model loaded on %s", device)
+        logger.info("Model loaded on %s", device_info)
         self.log_model_info()
 
     def _build_lora_config(self) -> Any:

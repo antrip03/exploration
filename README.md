@@ -57,11 +57,34 @@ The training script writes outputs under the directory specified by each config,
 - `reasoning_length/*`
 - `embedding_variance` is kept as a compatibility no-op and is always `0.0`
 
+## Multi-GPU Training
+
+On a machine with 2+ CUDA GPUs, use `accelerate launch` to distribute training:
+
+**Bash / CLI:**
+```bash
+bash scripts/train_multi_gpu.sh configs/c2_hackable.yaml
+# or with overrides:
+NUM_GPUS=2 PER_DEVICE_BATCH_SIZE=1 bash scripts/train_multi_gpu.sh configs/c2_hackable.yaml
+```
+
+**Python / Kaggle notebook:**
+```bash
+python scripts/train_multi_gpu.py --config configs/c2_hackable.yaml --num-gpus 2 --per-device-batch-size 1
+```
+
+**Manual accelerate launch:**
+```bash
+accelerate launch --num_processes 2 scripts/train.py --config configs/c2_hackable.yaml training.per_device_batch_size=1
+```
+
 ## Kaggle
 
 ```bash
 bash scripts/kaggle_setup.sh
 ```
+
+For multi-GPU training on Kaggle (when available), use `python scripts/train_multi_gpu.py` instead of `python scripts/train.py`.
 
 ## License
 
