@@ -38,14 +38,23 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    # Ensure accelerate is installed
+    # Ensure the training stack is installed in the same Python environment used by accelerate
+    packages = ["accelerate", "transformers", "datasets", "torch", "trl", "peft", "wandb", "pyyaml", "pydantic", "ninja", "packaging"]
+    for pkg in packages:
+        try:
+            __import__(pkg)
+        except ImportError:
+            print(f"✗ Missing dependency: {pkg}. Installing...")
+            subprocess.run([sys.executable, "-m", "pip", "install", "-q", pkg], check=True)
+
     try:
-        import accelerate
-        print(f"✓ Accelerate {accelerate.__version__} available")
-    except ImportError:
-        print("✗ Accelerate not found. Installing...")
-        subprocess.run([sys.executable, "-m", "pip", "install", "-q", "accelerate"], check=True)
-        print("✓ Accelerate installed")
+        subprocess.run([sys.executable, "-m", "pip", "install", "-q", "flash-attn", "--no-build-isolation"], check=True)
+        print("✓ flash-attn installed")
+    except subprocess.CalledProcessError as exc:
+        print(f"⚠ flash-attn install failed; falling back to eager attention ({exc})")
+
+    import accelerate
+    print(f"✓ Accelerate {accelerate.__version__} available")
 
     repo_root = str(Path(__file__).resolve().parents[1])
     os.chdir(repo_root)

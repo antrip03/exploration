@@ -18,6 +18,9 @@ echo "Per-device batch size: $PER_DEVICE_BATCH_SIZE"
 echo "Repo root: $REPO_ROOT"
 echo ""
 
+python -m pip install -q accelerate transformers datasets torch trl peft wandb pyyaml pydantic ninja packaging
+python -m pip install -q flash-attn --no-build-isolation || true
+
 # Launch with accelerate
 accelerate launch \
   --num_processes "$NUM_GPUS" \

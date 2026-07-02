@@ -56,6 +56,27 @@ class GRPOExperimentTrainer:
                 return torch.float16
         return requested
 
+    def _ensure_flash_attention(self) -> None:
+        if self.cfg.model.attn_implementation != "flash_attention_2":
+            return
+        try:
+            import importlib.util
+            if importlib.util.find_spec("flash_attn") is not None:
+                logger.info("FlashAttention 2 package already available")
+                return
+        except Exception:
+            pass
+
+        logger.info("Attempting to install flash-attn for FlashAttention 2")
+        try:
+            import subprocess
+            import sys
+            subprocess.check_call([sys.executable, "-m", "pip", "install", "-q", "ninja", "packaging"])
+            subprocess.check_call([sys.executable, "-m", "pip", "install", "-q", "flash-attn", "--no-build-isolation"])
+            logger.info("flash-attn installed successfully")
+        except Exception as exc:  # pragma: no cover - environment-dependent
+            logger.warning("Could not install flash-attn; falling back to eager attention (%s)", exc)
+
     def load_model(self) -> None:
         """Load the base model only; TRL applies PEFT after preserving its reference."""
         import torch
@@ -80,16 +101,25 @@ class GRPOExperimentTrainer:
             "torch_dtype": self._torch_dtype(),
             "low_cpu_mem_usage": True,
         }
+
+        attn_impl = self.cfg.model.attn_implementation
+        if attn_impl == "flash_attention_2":
+            try:
+                import importlib.util
+                if importlib.util.find_spec("flash_attn") is None:
+                    raise ImportError("flash_attn not installed")
+            except Exception as exc:
+                logger.warning("FlashAttention 2 unavailable (%s); forcing eager attention", exc)
+                attn_impl = "eager"
+
         try:
             self.model = AutoModelForCausalLM.from_pretrained(
                 self.cfg.model.name,
-                attn_implementation=self.cfg.model.attn_implementation,
+                attn_implementation=attn_impl,
                 **model_kwargs,
             )
         except (ImportError, ValueError) as exc:
-            if self.cfg.model.attn_implementation != "flash_attention_2":
-                raise
-            logger.warning("FlashAttention 2 unavailable (%s); falling back to eager", exc)
+            logger.warning("Attention backend %r unavailable (%s); falling back to eager", attn_impl, exc)
             self.model = AutoModelForCausalLM.from_pretrained(
                 self.cfg.model.name,
                 attn_implementation="eager",
