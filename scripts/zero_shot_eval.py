@@ -6,6 +6,8 @@ import argparse
 import sys
 from pathlib import Path
 
+import torch
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from src.config import ExperimentConfig
@@ -20,6 +22,12 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run a zero-shot Countdown gate.")
     parser.add_argument("--config", required=True, help="Path to the experiment config.")
     parser.add_argument("--k", type=int, default=8, help="Samples per prompt.")
+    parser.add_argument(
+        "--max-samples",
+        type=int,
+        default=None,
+        help="Maximum number of evaluation examples to use. Defaults to 100 on CUDA and 20 on CPU.",
+    )
     return parser.parse_args()
 
 
@@ -28,10 +36,13 @@ def main() -> None:
     setup_python_logging(level="INFO")
     cfg = ExperimentConfig.from_yaml(args.config)
     _, eval_dataset = load_dataset_for_task(cfg.dataset)
-    eval_dataset = eval_dataset.select(range(min(100, len(eval_dataset))))
+    default_max_samples = 100 if torch.cuda.is_available() else 20
+    max_samples = args.max_samples if args.max_samples is not None else default_max_samples
+    eval_dataset = eval_dataset.select(range(min(max_samples, len(eval_dataset))))
 
     trainer = GRPOExperimentTrainer(cfg)
     trainer.load_model()
+    print(f"Running zero-shot eval on {len(eval_dataset)} examples using {'CUDA' if torch.cuda.is_available() else 'CPU'}")
 
     formatted = eval_dataset.map(
         lambda row: format_prompt(row, trainer.tokenizer),

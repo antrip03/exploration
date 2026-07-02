@@ -3,13 +3,21 @@
 > **Type:** Workshop Paper (Research)
 > **Target Venues:** NeurIPS RIGL/SATA · ICML · ICLR workshops on RL + LLMs
 > **Compute Budget:** Zero cost — free-tier Kaggle/Colab (T4/A10 GPU)
-> **Status:** Design complete · Implementation not started
+> **Status:** Implementation and validation complete; experiment execution and analysis pending
 
 ---
 
-## 1. Research Question
+## 1. Overview
 
-> **Do reward hacking guardrails in GRPO reduce exploration diversity, and if so, under what conditions and by how much?**
+This repository implements a reproducible research pipeline for studying reward hacking and exploration trade-offs in GRPO on Countdown-style arithmetic reasoning tasks. The main question is whether guardrails such as KL regularization and hard length caps reduce reward hacking while also reducing exploration diversity.
+
+The project is now in a runnable state: the core training/evaluation stack, configs, reward logic, metrics, and tests are already in place. What remains is to run the pilot experiments and analyze the resulting behavior.
+
+---
+
+## 2. Research Question
+
+> Do reward hacking guardrails in GRPO reduce exploration diversity, and if so, under what conditions and by how much?
 
 ### Sub-questions
 - Can reward hacking be reliably induced in a controlled GRPO setting with a misspecified proxy reward?
@@ -19,385 +27,226 @@
 
 ---
 
-## 2. Core Hypothesis
+## 3. Core Hypothesis
 
-Guardrails designed to prevent reward exploitation (KL penalty, length caps) may inadvertently constrain the policy's ability to explore diverse solution strategies. Stronger guardrails → less hacking, but also less exploration. The **pass@k − pass@1 gap** is the primary signal for detecting this tradeoff.
+Guardrails designed to prevent reward exploitation may inadvertently constrain the policy’s ability to explore diverse solution strategies. Stronger guardrails should reduce hacking, but they may also reduce exploration. The primary signal for this tradeoff is the difference between pass@k and pass@1.
 
 ---
 
-## 3. Objectives
+## 4. Objectives
 
 | # | Objective | Status |
 |---|---|---|
-| 1 | Demonstrate reward hacking in a controlled GRPO setting | Design done |
-| 2 | Measure exploration in a principled, quantifiable way | Design done |
-| 3 | Implement guardrails and measure their effect on hacking + exploration | Not started |
-| 4 | Characterize the guardrail-exploration tradeoff curve across β values | Not started |
+| 1 | Demonstrate reward hacking in a controlled GRPO setting | Ready to test |
+| 2 | Measure exploration in a principled, quantifiable way | Implemented |
+| 3 | Compare guardrails against a hackable baseline | Implemented |
+| 4 | Characterize the exploration-guardrail tradeoff curve | Pending pilot and analysis |
 
 ---
 
-## 4. Experimental Setup
+## 5. Current Repository State
 
-### 4.1 Model
-- **Primary:** Qwen2.5-1.5B-Instruct + LoRA (via `peft`)
-- **Fallback:** SmolLM2 (if Countdown task is too easy for Qwen at baseline)
-- **Rationale:** Smallest model capable of meaningful arithmetic reasoning; fits on T4 16GB with LoRA
+### Implemented already
+- Config-driven experiment setup with YAML configs for six conditions.
+- Countdown dataset loading and prompt preprocessing.
+- Prompt building and output parsing for structured reasoning traces.
+- Reward functions with separate correctness/length/format components.
+- GRPO trainer wrapper around TRL.
+- Greedy and sampled evaluation pipelines.
+- Metrics for pass@1, pass@k, exploration gap, unique solutions, and reasoning length.
+- Local and Kaggle-friendly setup scripts.
+- Unit tests and a zero-shot evaluation entrypoint.
 
-> ⚠️ **Pre-experiment check required:** Run zero-shot eval on 100 Countdown problems before committing. If pass@1 > 65%, switch to 4-to-5 number problems or SmolLM2. High baseline accuracy reduces the incentive to hack and shrinks the exploration gap signal.
+### Verified locally
+The repository has already been validated with:
+- `python -m pytest -q` → 76 passed, 2 skipped
+- `python scripts/zero_shot_eval.py --config configs/c1_baseline.yaml` → launched successfully and began loading the dataset/model
 
-### 4.2 Framework
-- **RL Training:** HuggingFace TRL — `GRPOTrainer`
-- **Parameter Efficiency:** `peft` LoRA
-- **Logging:** `wandb` (free tier) + CSV fallback
-- **Environment:** Kaggle Notebooks (free T4/A10)
+### What is still pending
+- Pilot training runs to see whether the hackable condition actually exhibits reward hacking.
+- Calibration of reward weights and the C6 length cap from pilot results.
+- Full condition runs and post-run analysis.
 
-### 4.3 Task
-- **Primary:** Countdown (arithmetic reasoning)
-  - Given N numbers, reach a target using {+, −, ×, ÷}, each number used exactly once
-  - Dataset: `Jiayi-Pan/Countdown-Tasks-3to4` (HuggingFace)
-  - Why: Multiple valid solution paths make exploration genuinely meaningful; verifiable reward; supports deliberate reward misspecification
-- **Secondary:** GSM8K — **cut for MVP**; reinstate only if time/compute allows
+---
 
-### 4.4 How GRPO Works Here
-TRL's GRPOTrainer handles the algorithm entirely. The implementation provides only:
-1. **Reward functions** — one per condition
-2. **GRPOConfig** — experimental knobs (β, num_generations, max_steps, etc.)
-3. **Dataset pipeline** — prompt formatting
+## 6. Experimental Setup
 
+### 6.1 Model
+- Primary: Qwen2.5-1.5B-Instruct + LoRA via PEFT
+- Fallback: SmolLM2 if the baseline task proves too easy
+- Rationale: small enough for free-tier GPU training while still allowing meaningful reasoning behavior
+
+### 6.2 Framework
+- RL training: Hugging Face TRL GRPOTrainer
+- Parameter efficiency: PEFT LoRA
+- Logging: W&B and CSV-compatible logging
+- Environment: local or Kaggle GPU notebook
+
+### 6.3 Task
+- Primary task: Countdown arithmetic reasoning
+- Dataset: Jiayi-Pan/Countdown-Tasks-3to4
+- Why it fits: multiple valid solution paths make exploration meaningful; reward is verifiable; reward misspecification is easy to induce
+
+### 6.4 GRPO mechanics
 At each training step:
-```
-For each prompt batch:
-  1. Sample G rollouts from active policy     (num_generations = 8)
-  2. Score each rollout via reward_fn         → r_i
-  3. Normalize within group                   → A_i = (r_i − mean(r)) / std(r)
-  4. Compute KL(active policy ∥ ref model)    (ref = frozen base Qwen, no LoRA)
-  5. Loss = −A_i · log_prob + β · KL
-  6. Backprop → update active policy only
-```
+1. Sample G rollouts from the active policy.
+2. Score each rollout with the reward function.
+3. Normalize rewards within the group.
+4. Add the KL penalty for the guardrailed conditions.
+5. Update the active policy via the GRPO loss.
 
-**Reference model:** Frozen Qwen2.5-1.5B-Instruct (base checkpoint, no LoRA adapters).
-Set once at trainer initialization; never updated. KL measures drift from this neutral prior —
-**not** from the hacking policy (C2). This applies to C3, C4, C5 only; C1, C2, C6 use β=0.
+The intended reference setup is a frozen base model, not the hackable-policy checkpoint.
 
 ---
 
-## 5. Reward Function Design
+## 7. Reward Function Design
 
-### 5.1 Reward Components
+### 7.1 Reward components
+- Correctness reward: +1.0 when the answer is correct and non-degenerate
+- Length bonus: positive bonus for long reasoning traces in hackable conditions
+- Format bonus: +0.15 for a well-formed reasoning/answer structure
 
-| Component | Formula | Conditions Active |
-|---|---|---|
-| Correctness | +1.0 if answer correct, else 0 | All (C1–C6) |
-| Length bonus | +scaled bonus proportional to `<think>` token count (up to ceiling) | C2–C6 |
-| Format bonus | +0.15 for well-formed `<think>…</think><answer>…</answer>` | All (C1–C6) |
+These components should be logged separately for post-hoc analysis.
 
-> ⚠️ **Length and format bonuses must be computed and logged separately** in the reward function code, even though they're summed into a single return value. This enables post-hoc attribution of hacking to length vs format gaming.
+### 7.2 Degenerate solution filter
+Expressions matching patterns such as `n×1`, `n+0`, `n−0`, or `n/1` should receive zero correctness reward even if they are mathematically valid. This is important because otherwise the hackable condition becomes polluted by trivial exploitation.
 
-### 5.2 Reward Weights (starting point — calibrate in C2 pilot)
+### 7.3 Starting weights
+The planned starting configuration is:
+- correctness weight: 1.0
+- length bonus max: 0.5
+- format bonus: 0.15
 
-```python
-CORRECTNESS_WEIGHT = 1.0
-LENGTH_BONUS_MAX   = 0.5    # at some token ceiling TBD from pilot
-FORMAT_BONUS       = 0.15
-```
-
-The length bonus must be strong enough for hacking to dominate in C2, but not so strong that correctness collapses to zero. The pilot calibrates this balance.
-
-### 5.3 Degenerate Solution Filter
-Solutions matching patterns `n × 1`, `n + 0`, `n − 0`, `n / 1` receive **zero correctness reward**
-regardless of mathematical validity. This is **not a stretch goal** — without it, pass@1 in C2 is
-polluted by degenerate exploitation, undermining the core finding.
+These values should be calibrated from the initial pilot run.
 
 ---
 
-## 6. Experimental Conditions
+## 8. Experimental Conditions
 
 | ID | Condition | Reward | Guardrail | β |
 |---|---|---|---|---|
-| C1 | Baseline | Correctness + format | None | — |
+| C1 | Baseline | Correctness + format | None | 0.0 |
 | C2 | Hackable | Correctness + length + format | None | 0.0 |
 | C3 | KL-Low | Hackable | KL regularization | 0.01 |
 | C4 | KL-Med | Hackable | KL regularization | 0.05 |
 | C5 | KL-High | Hackable | KL regularization | 0.1 |
-| C6 | LengthCap | Hackable | Hard length cap | — |
+| C6 | LengthCap | Hackable | Hard length cap | 0.0 |
 
-**All conditions:**
-- Start from the same base Qwen2.5-1.5B-Instruct checkpoint
-- Train from step 0 with guardrails active from the start (not introduced mid-run)
-- Use the same random seed(s) — minimum 2 seeds
-- KL reference for C3/C4/C5 = frozen base model (not C2 policy)
-
-**Minimum viable experiment:** C1, C2, C4
+The minimum viable experiment is C1, C2, and C4.
 
 ---
 
-## 7. Key Hyperparameters
+## 9. Metrics and Hacking Signals
 
-| Parameter | Value | Status |
-|---|---|---|
-| `num_generations` (k) | 8 | Locked |
-| `beta` values | {0.0, 0.01, 0.05, 0.1} | Locked |
-| `max_steps` per condition | TBD from pilot | Pending |
-| `length_cap` for C6 | TBD from pilot | Pending |
-| Seeds | 2 minimum | Locked |
-| Eval frequency | Every 100 steps | Locked |
-| LoRA rank | 16 | Locked |
-| Reward weights | Starting point above; calibrate in pilot | Pending |
+### Primary metrics
+- pass@1
+- pass@k
+- exploration gap = pass@k − pass@1
+- unique solution count
+- reasoning length statistics
 
----
-
-## 8. Exploration Metrics
-
-| Metric | How Measured | Priority |
-|---|---|---|
-| **pass@k − pass@1 gap** | k=8 rollouts; any-correct minus greedy accuracy | **Primary** |
-| **pass@1** | Greedy decode accuracy | Core |
-| **pass@k** | Fraction of problems with ≥1 correct in 8 samples | Core |
-| **Unique solution count** | Deduplicate correct expressions per problem (commutative normalization) | Secondary |
-| **Response length distribution** | Mean + std of `<think>` token count across rollouts | Hacking indicator |
-| ~~Rollout embedding variance~~ | ~~Embed think traces, cosine distance~~ | **Cut** |
-
-**Solution deduplication rule:** `(a+b)×c` and `c×(a+b)` are the same solution.
-Normalize expressions for commutativity before deduplication.
-
----
-
-## 9. Reward Hacking Indicators
-
-- `<think>` block length increases monotonically over training steps
-- pass@1 flat or declining while total reward increases
-- Degenerate solutions (`n×1`, `n+0`) appearing at high frequency before filter kicks in
-- pass@k gap collapsing — model converges to one exploit strategy
-- High format reward, low correctness reward in logged component breakdown
+### Hacking indicators
+- reasoning length increases over time
+- pass@1 stays flat or drops while total reward rises
+- degenerate solutions appear frequently
+- pass@k gap collapses as the model converges on one exploit strategy
 
 ---
 
 ## 10. Workflow
 
-### Phase 0 — Pre-experiment Validation
-```
-[ ] Zero-shot eval: run Qwen2.5-1.5B-Instruct on 100 Countdown problems
-      → If pass@1 > 65%: switch to 4-to-5 number problems or SmolLM2
-[ ] Verify TRL GRPOTrainer source:
-      → Confirm beta=0 fully disables KL (not just low-weights it)
-      → Confirm KL direction is KL(policy∥ref), not KL(ref∥policy)
-      → Confirm ref_model is base model without LoRA adapters
-[ ] Lock remaining hyperparameters (steps, reward weights starting point)
-[ ] Set up Kaggle environment: TRL + peft + wandb
-[ ] Confirm W&B logging works end-to-end with a dummy run
-```
+### Phase 0 — Pre-experiment validation
+- Run the zero-shot gate on Countdown.
+- If pass@1 is too high, switch to a harder task or smaller model.
+- Review the TRL audit and confirm the intended KL semantics.
+- Confirm that the experiment configs use the intended β values and rollout count.
 
-### Phase 1 — C2 Pilot Run
-```
-[ ] Run C2 for ~300–500 steps
-[ ] Confirm hacking signal: length ↑, accuracy flat, degenerate solutions appearing
-[ ] Calibrate reward weights if signal too weak or too strong
-[ ] Record: at what step does hacking clearly emerge?
-      → This sets the minimum training horizon for all conditions
-[ ] Record: what is the 90th percentile <think> token length at convergence?
-      → This sets the length_cap threshold for C6
-```
+### Phase 1 — Pilot run
+- Run C2 for a short horizon (around 300–500 steps).
+- Check whether the model begins to hack the reward by increasing reasoning length.
+- Calibrate reward scales and the length cap threshold from the observed behavior.
 
-### Phase 2 — Full Experiment
-```
-[ ] Run all 6 conditions (or C1/C2/C4 MVP) from step 0
-[ ] Guardrails active from step 0 for C3–C6
-[ ] Checkpoint every 100 steps
-[ ] At each checkpoint: evaluate pass@1, pass@k, length stats, unique solution count
-[ ] Log to W&B per step: total reward, correctness component, length component,
-    format component, KL divergence (C3–C5), mean think length
-```
+### Phase 2 — Main experiment
+- Run the baseline and guardrailed conditions from step 0.
+- Evaluate at regular checkpoints.
+- Log reward component breakdowns and reasoning length statistics.
 
-### Phase 3 — Analysis and Writeup
-```
-[ ] Plot: pass@k gap vs training steps for all conditions (primary figure)
-[ ] Plot: mean <think> length vs pass@1 (hacking signature)
-[ ] Plot: β sensitivity — exploration gap vs β at final checkpoint
-[ ] Qualitative: sample rollouts from C2 vs C4 at same training step
-[ ] Write paper
-```
+### Phase 3 — Analysis and writeup
+- Compare pass@1, pass@k, and explanation length across conditions.
+- Plot the exploration gap over time.
+- Write the paper and report the tradeoff curve.
 
 ---
 
 ## 11. Implementation Status
 
-### Done ✅
-- Problem framing and research question
-- Task selection (Countdown primary, GSM8K cut)
-- Model and framework selection
-- Reward function design (3 types, 6 conditions)
-- Exploration metrics defined (embedding variance cut)
-- Experimental grid designed
-- Reference policy confirmed: frozen base model, not C2
-- Training workflow confirmed: all conditions from step 0
-- β values locked: {0.01, 0.05, 0.1}
-- k locked: 8
+### Done
+- Research framing and experimental design
+- Repository scaffolding and experiment harness
+- Reward logic, trainer wrapper, evaluation, and metrics
+- Configs for all six conditions
+- Local validation and a working zero-shot gate
 
-### Decisions Still Needed 🔶
-- [ ] Max training steps — from pilot
-- [ ] Reward weight magnitudes — from pilot
-- [ ] Length cap threshold for C6 — from pilot
-- [ ] Solution deduplication normalization implementation
+### Still to be determined from pilot data
+- Training horizon per condition
+- Reward weight magnitudes
+- Hard length cap threshold for C6
+- Whether the hackable condition shows a reliable hacking signature in practice
 
-### Not Started ❌
-- Environment setup
-- Any code in `src/`
-- Any training runs
-- Analysis or writeup
+### Not yet started
+- Full experimental sweep across conditions and seeds
+- Analysis plots and writeup
 
 ---
 
-## 12. Code Agent Instructions
+## 12. Verification and Planning Guidance for the Next Agent
 
-> This section is the handoff to a code agent. It specifies **exactly what to check, change, and implement** in each file of the repository, given the design decisions finalized in this plan. Files are listed in implementation priority order.
+The repository is no longer in a “build from scratch” state. The correct next task is not to recreate the implementation, but to verify that the current implementation still matches the research design and then run the first pilot experiments.
 
----
+### What to verify first
+1. Confirm the current implementation matches the final design decisions.
+2. Confirm the config values are correct:
+   - `num_generations = 8`
+   - `beta = 0.0` for C1/C2/C6
+   - `beta = 0.01`, `0.05`, `0.1` for C3/C4/C5
+3. Confirm that reward components are logged separately and that degeneracy is filtered before correctness is assigned.
+4. Confirm that the trainer uses the same base checkpoint for the active model and reference setup.
+5. Check the TRL audit notes to ensure the implementation aligns with TRL’s actual semantics.
 
-### 12.0 Before Touching Any File — TRL Source Audit
+### Files to review first
+- [docs/trl_audit.md](docs/trl_audit.md)
+- [configs/base.yaml](configs/base.yaml)
+- [configs/c5_kl_high.yaml](configs/c5_kl_high.yaml)
+- [src/reward_functions.py](src/reward_functions.py)
+- [src/trainer.py](src/trainer.py)
+- [src/metrics.py](src/metrics.py)
 
-**Do this first. It gates everything else.**
+### If a mismatch is found
+Patch the code or config so that:
+- the reward function exposes separate reward components,
+- the reward function filters degenerate solutions before assigning correctness,
+- the guardrail conditions use the intended β values,
+- the trainer uses the intended reference setup,
+- and evaluation is computed using the intended sampled rollout semantics.
 
-```python
-# In a notebook or script, inspect TRL's GRPOTrainer source:
-import inspect
-from trl import GRPOTrainer
-print(inspect.getsource(GRPOTrainer.compute_loss))
-# or browse: https://github.com/huggingface/trl/blob/main/trl/trainer/grpo_trainer.py
-```
-
-Verify and document:
-1. **KL direction:** is it `kl = policy_logprob - ref_logprob` (correct: KL(π∥ref)) or reversed?
-2. **beta=0 behavior:** does `beta=0` fully zero out KL term, or is there a floor?
-3. **ref_model handling:** when `ref_model` is passed explicitly, does TRL freeze it completely (no gradient, no LoRA)?
-4. **reward function signature:** confirm exact expected signature — `(completions: list[str], **kwargs) -> list[float]` — and what kwargs are available (prompts, answers, etc.)
-5. **num_generations:** confirm this is the G parameter (rollouts per prompt) and it maps to pass@k k
-
-Write a short `docs/trl_audit.md` recording findings. If any of the above differ from expectation, the config and trainer wrapper must be adjusted before running anything.
-
----
-
-### 12.1 `configs/base.yaml` — **MODIFY**
-
-The base config needs to reflect all locked decisions. Check the existing file and ensure these fields are present and correct:
-
-```yaml
-model:
-  name: "Qwen/Qwen2.5-1.5B-Instruct"
-  # ref_model must be the SAME base checkpoint, not a trained checkpoint
-  ref_model: "Qwen/Qwen2.5-1.5B-Instruct"
-
-lora:
-  r: 16
-  lora_alpha: 32
-  lora_dropout: 0.05
-  target_modules: ["q_proj", "v_proj"]  # verify correct module names for Qwen2.5
-
-training:
-  num_generations: 8        # k for pass@k — locked
-  max_steps: 1000           # placeholder; update after pilot
-  eval_steps: 100           # checkpoint + eval frequency
-  seed: 42                  # primary seed; run second seed=123 for all conditions
-  per_device_train_batch_size: 1
-  gradient_accumulation_steps: 4
-
-reward:
-  correctness_weight: 1.0
-  length_bonus_max: 0.5     # calibrate in pilot
-  length_bonus_ceiling: 512 # token count at which max bonus is reached; calibrate in pilot
-  format_bonus: 0.15
-
-dataset:
-  name: "Jiayi-Pan/Countdown-Tasks-3to4"
-  train_split: "train"
-  eval_split: "test"
-  max_eval_samples: 200     # for pass@k evaluation — enough for signal, fast enough to run
-
-logging:
-  wandb_project: "grpo-reward-hacking"
-  log_reward_components: true   # must be true — log correctness/length/format separately
-```
-
-**What to check in existing file:**
-- Is `ref_model` set? If missing, add it explicitly — do not rely on TRL default
-- Is `num_generations` present? If it's set to anything other than 8, change it
-- Is `log_reward_components` present? If missing, add — this is required for post-hoc hacking attribution
-- Remove any GSM8K dataset references from base config
+### After verification
+- Run the zero-shot gate.
+- Run the C2 pilot.
+- Calibrate the reward weights from the pilot.
+- Then run the main conditions.
 
 ---
 
-### 12.2 `configs/c1_baseline.yaml` through `configs/c6_length_cap.yaml` — **MODIFY**
+## 13. Practical Next Actions
 
-Each condition config inherits from base and overrides only what differs. Check each file:
+1. Run the zero-shot gate.
+2. Run a short C2 pilot.
+3. Inspect whether reasoning length rises and whether pass@1 remains flat or drops.
+4. Use those results to set the length cap and to decide the training horizon for all conditions.
+5. Then run the main experimental sweep and analyze the outputs.
 
-**c1_baseline.yaml**
-```yaml
-# inherits base
-training:
-  beta: 0.0   # confirm explicitly set, not absent (absence ≠ zero in all TRL versions)
-reward:
-  length_bonus_max: 0.0    # no length bonus in C1
-  format_bonus: 0.15       # format bonus active in all conditions
-```
+This plan now reflects the actual state of the repository: the implementation is largely in place and validated, and the next work is empirical validation and experimentation rather than building the scaffolding from scratch.
 
-**c2_hackable.yaml**
-```yaml
-training:
-  beta: 0.0
-reward:
-  length_bonus_max: 0.5    # hackable — length bonus active
-  format_bonus: 0.15
-```
-
-**c3_kl_low.yaml**
-```yaml
-training:
-  beta: 0.01    # KL coefficient — confirm this maps to the beta param TRL expects
-reward:
-  length_bonus_max: 0.5
-  format_bonus: 0.15
-```
-
-**c4_kl_med.yaml** — beta: 0.05
-
-**c5_kl_high.yaml** — beta: 0.1
-
-**c6_length_cap.yaml**
-```yaml
-training:
-  beta: 0.0
-  max_completion_length: TBD    # set after pilot; use 90th percentile of C2 think length
-reward:
-  length_bonus_max: 0.5
-  format_bonus: 0.15
-  hard_length_cap: true         # flag that triggers zero reward above threshold
-```
-
-**What to check across all condition configs:**
-- β values match exactly: {0.0, 0.0, 0.01, 0.05, 0.1, 0.0} for C1–C6
-- C5 is β=0.1 NOT β=0.2 (there was a discrepancy in earlier docs — 0.1 is correct per the image)
-- No condition references GSM8K
-- All conditions use same `num_generations: 8`
-
----
-
-### 12.3 `src/reward_functions.py` — **REWRITE**
-
-This is the most critical file. The existing implementation (if any) likely does not:
-- Keep length and format components separable
-- Implement the degenerate solution filter
-- Return component breakdowns for logging
-
-**Required interface:**
-
-```python
-def compute_reward_components(
-    completion: str,
-    answer: str,
-    config: RewardConfig
-) -> dict:
-    """
-    Returns individual reward components — never sum them here.
-    Caller sums. This enables per-component logging.
     
     Returns:
         {

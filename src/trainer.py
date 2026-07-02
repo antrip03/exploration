@@ -58,6 +58,7 @@ class GRPOExperimentTrainer:
 
     def load_model(self) -> None:
         """Load the base model only; TRL applies PEFT after preserving its reference."""
+        import torch
         from transformers import AutoModelForCausalLM, AutoTokenizer
 
         if self.cfg.model.ref_model != self.cfg.model.name:
@@ -94,8 +95,13 @@ class GRPOExperimentTrainer:
                 attn_implementation="eager",
                 **model_kwargs,
             )
+
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.model.to(device)
+        self.model.eval()
         self.model.config.use_cache = False
         self._reward_fn = get_reward_fn(self.cfg.reward, tokenizer=self.tokenizer)
+        logger.info("Model loaded on %s", device)
         self.log_model_info()
 
     def _build_lora_config(self) -> Any:
