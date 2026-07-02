@@ -26,43 +26,25 @@ logger = logging.getLogger(__name__)
 # Template constants
 # ─────────────────────────────────────────────────────────────────────────────
 
-SYSTEM_PROMPT: str = (
-    "You are a precise mathematical reasoning assistant. "
-    "Always show your work step by step inside <think> tags, "
-    "then provide your final answer inside <answer> tags."
-)
+SYSTEM_PROMPT = """You are a mathematical reasoning assistant.
+Given a set of numbers and a target, find a way to reach the target
+using each number exactly once with basic arithmetic operations (+, -, *, /).
+
+Show your reasoning in <think>...</think> tags, then give your answer in
+<answer>...</answer> tags.
+
+Example:
+<think>
+I have numbers [3, 4, 5] and target 17.
+4 * 5 = 20, 20 - 3 = 17.
+</think>
+<answer>(4 * 5) - 3</answer>"""
 
 COUNTDOWN_TEMPLATE: str = """\
 Using the numbers {numbers}, create an arithmetic expression that equals {target}.
-You may use each number at most once.
-Use only the basic operations: +, -, *, /.
-
-Think through the problem carefully, then give your answer.
-
-<think>
-{think_placeholder}
-</think>
-
-<answer>
-{answer_placeholder}
-</answer>"""
-
-GSM8K_TEMPLATE: str = """\
-Solve the following math problem step by step.
-
-Problem: {problem}
-
-<think>
-{think_placeholder}
-</think>
-
-<answer>
-{answer_placeholder}
-</answer>"""
-
-# Placeholder text used in few-shot examples or inference prompts
-_THINK_PLACEHOLDER = "..."
-_ANSWER_PLACEHOLDER = "..."
+Use each number at most once and only the operations +, -, *, /.
+Think through the problem carefully, then provide your reasoning and answer using the required tags.
+"""
 
 # Regex patterns for parsing model outputs
 _THINK_PATTERN: re.Pattern[str] = re.compile(
@@ -119,7 +101,6 @@ class ParsedOutput:
         """
         if self.think_block is None:
             return 0
-        # TODO: Replace with actual tokenizer-based count when trainer is available
         return len(self.think_block.split())
 
 
@@ -131,7 +112,7 @@ class ParsedOutput:
 def build_countdown_prompt(
     target: int,
     numbers: list[int],
-    include_system_prompt: bool = True,
+    include_system_prompt: bool = False,
 ) -> str:
     """Build a Countdown task prompt.
 
@@ -139,6 +120,8 @@ def build_countdown_prompt(
         target: The target number the model must reach.
         numbers: The list of available numbers to combine.
         include_system_prompt: Whether to prepend the system prompt.
+        The default keeps the prompt focused on the task statement so it can be
+        wrapped by a chat template later when needed.
 
     Returns:
         A fully formatted prompt string ready for the model.
@@ -148,38 +131,7 @@ def build_countdown_prompt(
         >>> print(prompt[:80])
     """
     numbers_str = ", ".join(str(n) for n in numbers)
-    body = COUNTDOWN_TEMPLATE.format(
-        numbers=numbers_str,
-        target=target,
-        think_placeholder=_THINK_PLACEHOLDER,
-        answer_placeholder=_ANSWER_PLACEHOLDER,
-    )
-    if include_system_prompt:
-        return f"{SYSTEM_PROMPT}\n\n{body}"
-    return body
-
-
-def build_gsm8k_prompt(
-    problem: str,
-    include_system_prompt: bool = True,
-) -> str:
-    """Build a GSM8K math word problem prompt.
-
-    Args:
-        problem: The raw problem text from the GSM8K dataset.
-        include_system_prompt: Whether to prepend the system prompt.
-
-    Returns:
-        A fully formatted prompt string.
-
-    Example:
-        >>> prompt = build_gsm8k_prompt("Janet has 3 apples...")
-    """
-    body = GSM8K_TEMPLATE.format(
-        problem=problem,
-        think_placeholder=_THINK_PLACEHOLDER,
-        answer_placeholder=_ANSWER_PLACEHOLDER,
-    )
+    body = COUNTDOWN_TEMPLATE.format(numbers=numbers_str, target=target)
     if include_system_prompt:
         return f"{SYSTEM_PROMPT}\n\n{body}"
     return body

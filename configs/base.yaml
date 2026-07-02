@@ -1,15 +1,14 @@
 # =============================================================
 # base.yaml  —  Shared base configuration for all experiments
 # =============================================================
-# All condition-specific configs inherit from (or override) this file.
-# Use OmegaConf / pydantic to load and merge configs.
 
 # ── Model ──────────────────────────────────────────────────
 model:
   name: "Qwen/Qwen2.5-1.5B-Instruct"
+  ref_model: "Qwen/Qwen2.5-1.5B-Instruct"
   revision: "main"
-  dtype: "bfloat16"          # bfloat16 recommended for modern GPUs
-  attn_implementation: "flash_attention_2"  # or "eager" if FA2 unavailable
+  dtype: "bfloat16"
+  attn_implementation: "flash_attention_2"
   trust_remote_code: true
   max_length: 2048
 
@@ -17,8 +16,8 @@ model:
 lora:
   enabled: true
   r: 16
-  alpha: 32
-  dropout: 0.05
+  lora_alpha: 32
+  lora_dropout: 0.05
   target_modules:
     - "q_proj"
     - "k_proj"
@@ -33,8 +32,8 @@ lora:
 # ── Training ───────────────────────────────────────────────
 training:
   output_dir: "outputs/${experiment.condition_id}"
-  max_steps: 500
-  per_device_train_batch_size: 4
+  max_steps: 1000
+  per_device_train_batch_size: 1
   gradient_accumulation_steps: 4
   learning_rate: 1.0e-5
   lr_scheduler_type: "cosine"
@@ -45,7 +44,8 @@ training:
   dataloader_num_workers: 2
   remove_unused_columns: false
   # GRPO-specific
-  num_generations: 8           # G in GRPO (samples per prompt)
+  num_generations: 8
+  generation_batch_size: 8
   temperature: 0.9
   top_p: 0.95
   save_steps: 100
@@ -53,17 +53,17 @@ training:
   logging_steps: 10
   fp16: false
   bf16: true
+  beta: 0.0
 
 # ── Reward ─────────────────────────────────────────────────
 reward:
-  type: "baseline"             # one of: baseline | hackable | guardrailed
-  answer_reward_weight: 1.0
-  format_reward_weight: 0.0
-  length_bonus_weight: 0.0
-  # KL regularization
-  kl_beta: 0.0                 # 0 = disabled
-  # Hard length cap
-  max_reasoning_tokens: null   # null = disabled
+  type: "baseline"
+  correctness_weight: 1.0
+  length_bonus_max: 0.0
+  length_bonus_ceiling: 512
+  format_bonus: 0.15
+  hard_length_cap: false
+  hard_length_cap_tokens: 0
 
 # ── Generation ─────────────────────────────────────────────
 generation:
@@ -77,13 +77,15 @@ generation:
 
 # ── Dataset ────────────────────────────────────────────────
 dataset:
-  name: "countdown"            # one of: countdown | gsm8k
+  name: "Jiayi-Pan/Countdown-Tasks-3to4"
   split_train: "train"
-  split_eval: "validation"
-  max_train_samples: null      # null = use all
-  max_eval_samples: 500
+  # The upstream dataset has only a train split. Reserve a deterministic
+  # holdout rather than silently evaluating on training examples.
+  split_eval: null
+  eval_holdout_seed: 42
+  max_train_samples: null
+  max_eval_samples: 200
   preprocessing_num_workers: 4
-  # Countdown-specific
   countdown_min_digits: 1
   countdown_max_digits: 4
   countdown_num_numbers: 6
@@ -93,10 +95,11 @@ logging:
   level: "INFO"
   use_wandb: true
   wandb_project: "grpo-reward-hacking"
-  wandb_entity: null           # set via WANDB_ENTITY env var or here
+  wandb_entity: null
   use_tensorboard: true
   use_csv: true
   log_dir: "outputs/${experiment.condition_id}/logs"
+  log_reward_components: true
 
 # ── Experiment ─────────────────────────────────────────────
 experiment:

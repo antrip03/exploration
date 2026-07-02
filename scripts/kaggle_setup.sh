@@ -31,4 +31,12 @@ print(f'Total memory: {info.total_memory_gb:.1f} GB')
 print(f'Kaggle env: {info.is_kaggle}')
 "
 
+echo "[kaggle_setup] Verifying TRL version..."
+python -c "import trl; print('TRL version:', trl.__version__)"
+
+if [[ -n "${WANDB_API_KEY:-}" ]]; then
+    echo "[kaggle_setup] Logging into W&B using WANDB_API_KEY."
+    wandb login "$WANDB_API_KEY" || true
+fi
+
 echo "[kaggle_setup] Setup complete."

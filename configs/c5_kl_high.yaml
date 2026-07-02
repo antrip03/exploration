@@ -1,9 +1,6 @@
 # =============================================================
 # c5_kl_high.yaml  —  Condition 5: Hackable reward + KL β=0.1
 # =============================================================
-# Hackable reward with a strong KL divergence regularization.
-# Highest beta in the sweep (C3–C5).
-
 defaults:
   - base
 
@@ -14,12 +11,10 @@ experiment:
 
 reward:
   type: "guardrailed"
-  answer_reward_weight: 1.0
-  format_reward_weight: 0.3
-  length_bonus_weight: 0.1
-  kl_beta: 0.1                # Strong KL penalty
-  max_reasoning_tokens: null
+  length_bonus_max: 0.5
+  format_bonus: 0.15
 
 training:
   output_dir: "outputs/c5_kl_high"
+  beta: 0.1
   seed: 42

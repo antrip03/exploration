@@ -1,335 +1,340 @@
-"""
-src/reward_functions.py
-=======================
-Reward function interfaces for all experimental conditions.
-
-Each reward function takes a list of (prompt, completion) pairs and returns
-a list of scalar reward values. This matches the signature expected by
-HuggingFace TRL GRPOTrainer.
-
-Conditions:
-  C1 — reward_baseline()      : answer correctness only
-  C2 — reward_hackable()      : answer + length bonus + format
-  C3–C5 — reward_guardrailed(): hackable + KL divergence penalty (beta sweep)
-  C6 — reward_guardrailed()   : hackable + hard length cap
-
-Component functions (composable):
-  - answer_reward()    : checks correctness of <answer> block
-  - format_reward()    : checks for well-formed <think>/<answer> tags
-  - length_bonus()     : rewards longer reasoning (hackable signal)
-  - length_penalty()   : penalises reasoning beyond a hard cap
-
-Usage:
-    from src.reward_functions import get_reward_fn
-    reward_fn = get_reward_fn(cfg.reward)
-    rewards = reward_fn(prompts, completions)
-"""
+"""Safe, component-wise rewards for the Countdown GRPO experiments."""
 
 from __future__ import annotations
 
+import ast
 import logging
-import math
-from typing import Any, Callable, Optional
+import operator
+import re
+from collections import Counter
+from fractions import Fraction
+from statistics import mean
+from typing import Any, Callable, Iterable, Optional
 
 from src.config import RewardConfig, RewardType
-from src.prompts import parse_model_output
+from src.prompts import extract_answer, extract_think, parse_model_output
 
 logger = logging.getLogger(__name__)
+RewardFunction = Callable[..., list[float]]
 
-# Type alias: matches TRL GRPOTrainer reward_funcs signature
-RewardFunction = Callable[[list[str], list[str]], list[float]]
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Factory
-# ─────────────────────────────────────────────────────────────────────────────
-
-
-def get_reward_fn(cfg: RewardConfig) -> RewardFunction:
-    """Factory: return the appropriate reward function given the config.
-
-    Args:
-        cfg: RewardConfig specifying type, weights, and guardrail params.
-
-    Returns:
-        A callable reward function with signature (prompts, completions) -> rewards.
-
-    Raises:
-        ValueError: If cfg.type is not a recognised RewardType.
-
-    Example:
-        >>> reward_fn = get_reward_fn(cfg.reward)
-        >>> rewards = reward_fn(prompts=["..."], completions=["..."])
-    """
-    logger.info("Building reward function: type=%s", cfg.type)
-    if cfg.type == RewardType.BASELINE:
-        return reward_baseline(cfg)
-    elif cfg.type == RewardType.HACKABLE:
-        return reward_hackable(cfg)
-    elif cfg.type == RewardType.GUARDRAILED:
-        return reward_guardrailed(cfg)
-    else:
-        raise ValueError(f"Unknown reward type: {cfg.type!r}")
+_ALLOWED_BINOPS = {
+    ast.Add: operator.add,
+    ast.Sub: operator.sub,
+    ast.Mult: operator.mul,
+    ast.Div: operator.truediv,
+}
+_TOKEN_PATTERN = re.compile(r"\d+(?:\.\d+)?|[A-Za-z]+|[^\w\s]", re.UNICODE)
+_FULL_FORMAT = re.compile(
+    r"^\s*<think>\s*.+?\s*</think>\s*<answer>\s*.+?\s*</answer>\s*$",
+    re.DOTALL,
+)
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Composite reward functions
-# ─────────────────────────────────────────────────────────────────────────────
+def _completion_text(completion: Any) -> str:
+    """Normalize TRL standard and conversational completion formats."""
+    if isinstance(completion, str):
+        return completion
+    if isinstance(completion, list):
+        return "".join(
+            str(message.get("content", "")) if isinstance(message, dict) else str(message)
+            for message in completion
+        )
+    return str(completion)
 
 
-def reward_baseline(cfg: RewardConfig) -> RewardFunction:
-    """Return the baseline reward function (answer correctness only).
-
-    Condition C1. No hackable signals, no guardrails.
-
-    Args:
-        cfg: RewardConfig (only answer_reward_weight is used).
-
-    Returns:
-        A reward function: (prompts, completions) -> list[float].
-
-    TODO:
-        - Implement answer comparison logic in answer_reward().
-        - Decide on exact-match vs. numeric equivalence checking.
-        - Handle formatting tolerance (e.g., '24' vs '24.0').
-    """
-    w_ans = cfg.answer_reward_weight
-
-    def _reward_fn(
-        prompts: list[str],
-        completions: list[str],
-        answers: Optional[list[str]] = None,
-        **kwargs: Any,
-    ) -> list[float]:
-        rewards = []
-        for prompt, completion in zip(prompts, completions):
-            r_ans = answer_reward(prompt=prompt, completion=completion, answer=None)
-            rewards.append(w_ans * r_ans)
-        return rewards
-
-    return _reward_fn
+def count_tokens(text: str, tokenizer: Any = None) -> int:
+    """Count tokens with the run tokenizer, falling back to a stable lexical count."""
+    if not text:
+        return 0
+    if tokenizer is not None:
+        encoded = tokenizer(text, add_special_tokens=False)
+        ids = encoded["input_ids"] if isinstance(encoded, dict) else encoded.input_ids
+        return len(ids)
+    return len(_TOKEN_PATTERN.findall(text))
 
 
-def reward_hackable(cfg: RewardConfig) -> RewardFunction:
-    """Return the hackable reward function (answer + length bonus + format).
+def _evaluate_expression(expression: str) -> tuple[Fraction, list[Fraction], ast.AST]:
+    """Evaluate a restricted arithmetic expression and return its numeric literals."""
+    normalized = (
+        expression.strip()
+        .replace("×", "*")
+        .replace("÷", "/")
+        .replace("−", "-")
+        .replace("^", "**")
+    )
+    tree = ast.parse(normalized, mode="eval")
+    literals: list[Fraction] = []
 
-    Condition C2. Includes signals that can be exploited without correct reasoning.
+    def visit(node: ast.AST) -> Fraction:
+        if isinstance(node, ast.Expression):
+            return visit(node.body)
+        if isinstance(node, ast.Constant) and isinstance(node.value, (int, float)):
+            value = Fraction(str(node.value))
+            literals.append(value)
+            return value
+        if isinstance(node, ast.UnaryOp) and isinstance(node.op, (ast.UAdd, ast.USub)):
+            value = visit(node.operand)
+            return value if isinstance(node.op, ast.UAdd) else -value
+        if isinstance(node, ast.BinOp) and type(node.op) in _ALLOWED_BINOPS:
+            left, right = visit(node.left), visit(node.right)
+            if isinstance(node.op, ast.Div) and right == 0:
+                raise ValueError("division by zero")
+            return _ALLOWED_BINOPS[type(node.op)](left, right)
+        raise ValueError(f"Unsupported expression node: {type(node).__name__}")
 
-    Args:
-        cfg: RewardConfig with format_reward_weight and length_bonus_weight.
-
-    Returns:
-        A reward function: (prompts, completions) -> list[float].
-
-    TODO:
-        - Calibrate length_bonus() to avoid trivial exploitation.
-        - Implement format_reward() for tag-presence checking.
-        - Log per-component reward breakdown for analysis.
-    """
-    w_ans = cfg.answer_reward_weight
-    w_fmt = cfg.format_reward_weight
-    w_len = cfg.length_bonus_weight
-
-    def _reward_fn(
-        prompts: list[str],
-        completions: list[str],
-        answers: Optional[list[str]] = None,
-        **kwargs: Any,
-    ) -> list[float]:
-        rewards = []
-        for prompt, completion in zip(prompts, completions):
-            r_ans = answer_reward(prompt=prompt, completion=completion, answer=None)
-            r_fmt = format_reward(completion=completion)
-            r_len = length_bonus(completion=completion)
-            total = w_ans * r_ans + w_fmt * r_fmt + w_len * r_len
-            rewards.append(total)
-        return rewards
-
-    return _reward_fn
+    return visit(tree), literals, tree
 
 
-def reward_guardrailed(cfg: RewardConfig) -> RewardFunction:
-    """Return the guardrailed reward function (hackable + KL or length cap).
+def is_degenerate_solution(expression: str) -> bool:
+    """Detect identity operations such as ``n*1``, ``n+0`` and ``n/1``."""
+    try:
+        _, _, tree = _evaluate_expression(expression)
+    except (SyntaxError, ValueError, ZeroDivisionError):
+        return False
 
-    Conditions C3–C6. Wraps hackable reward with one or more guardrails.
+    def constant_value(node: ast.AST) -> Optional[Fraction]:
+        try:
+            value, _, _ = _evaluate_expression(ast.unparse(node))
+            return value
+        except (SyntaxError, ValueError, ZeroDivisionError):
+            return None
 
-    Guardrail selection:
-      - If kl_beta > 0  : KL divergence penalty is active (C3–C5).
-      - If max_reasoning_tokens is not None : Hard length cap active (C6).
-      - Both can be combined (though not in the current study design).
-
-    Args:
-        cfg: Full RewardConfig including guardrail parameters.
-
-    Returns:
-        A reward function: (prompts, completions) -> list[float].
-
-    TODO:
-        - Implement KL penalty computation (requires reference model logprobs).
-        - Integrate KL from TRL GRPOTrainer's built-in beta parameter vs.
-          manual computation — decide which approach to use.
-        - Implement hard length truncation / zero-reward-past-cap in length_penalty().
-    """
-    w_ans = cfg.answer_reward_weight
-    w_fmt = cfg.format_reward_weight
-    w_len = cfg.length_bonus_weight
-    kl_beta = cfg.kl_beta
-    max_tokens = cfg.max_reasoning_tokens
-
-    def _reward_fn(
-        prompts: list[str],
-        completions: list[str],
-        answers: Optional[list[str]] = None,
-        kl_divergences: Optional[list[float]] = None,
-        **kwargs: Any,
-    ) -> list[float]:
-        rewards = []
-        for i, (prompt, completion) in enumerate(zip(prompts, completions)):
-            r_ans = answer_reward(prompt=prompt, completion=completion, answer=None)
-            r_fmt = format_reward(completion=completion)
-            r_len = length_bonus(completion=completion)
-            hackable_total = w_ans * r_ans + w_fmt * r_fmt + w_len * r_len
-
-            # KL guardrail
-            kl_penalty = 0.0
-            if kl_beta > 0.0 and kl_divergences is not None:
-                # TODO: Verify sign convention (subtract KL from reward)
-                kl_penalty = kl_beta * kl_divergences[i]
-
-            # Hard length-cap guardrail
-            len_pen = 0.0
-            if max_tokens is not None:
-                len_pen = length_penalty(
-                    completion=completion,
-                    max_tokens=max_tokens,
-                )
-
-            rewards.append(hackable_total - kl_penalty - len_pen)
-        return rewards
-
-    return _reward_fn
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.BinOp):
+            continue
+        left, right = constant_value(node.left), constant_value(node.right)
+        if isinstance(node.op, ast.Mult) and (left == 1 or right == 1):
+            return True
+        if isinstance(node.op, ast.Add) and (left == 0 or right == 0):
+            return True
+        if isinstance(node.op, ast.Sub) and right == 0:
+            return True
+        if isinstance(node.op, ast.Div) and right == 1:
+            return True
+    return False
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Component reward functions
-# ─────────────────────────────────────────────────────────────────────────────
-
-
-def answer_reward(
-    prompt: str,
-    completion: str,
-    answer: Optional[str] = None,
-) -> float:
-    """Compute the answer-correctness reward for a single completion.
-
-    Extracts the <answer> block and compares to ground truth.
-
-    Args:
-        prompt: The input prompt (may contain the ground-truth answer in metadata).
-        completion: The model's completion string.
-        answer: Ground-truth answer string. If None, tries to extract from prompt.
-
-    Returns:
-        Reward in [0.0, 1.0]. 1.0 = correct, 0.0 = incorrect / missing.
-
-    TODO:
-        - Implement numeric equivalence check (not just string equality).
-        - Handle expression evaluation for Countdown (e.g., '(3+1)*2 == 8').
-        - Handle GSM8K answer extraction (####-separated).
-        - Consider partial credit scoring.
-    """
-    parsed = parse_model_output(completion)
-    if not parsed.has_answer:
-        return 0.0
-
-    # TODO: Compare parsed.answer_block against ground-truth answer
-    # For now, return 0.0 as placeholder
-    return 0.0
-
-
-def format_reward(completion: str) -> float:
-    """Compute the formatting reward for a single completion.
-
-    Awards credit for the presence and correct nesting of
-    <think>...</think> and <answer>...</answer> blocks.
-
-    Args:
-        completion: The model's completion string.
-
-    Returns:
-        Reward in [0.0, 1.0]. 1.0 = perfectly formatted.
-
-    TODO:
-        - Implement graduated scoring:
-            0.5 for either tag present, 1.0 for both.
-        - Penalise reversed tag order (answer before think).
-        - Consider whether empty blocks should be penalised.
-    """
-    parsed = parse_model_output(completion)
-    # TODO: Implement graduated format scoring
-    if parsed.is_well_formed:
-        return 1.0
-    elif parsed.has_think or parsed.has_answer:
-        return 0.5
-    return 0.0
+def expression_is_correct(
+    expression: str,
+    target: str | int | float,
+    numbers: Optional[Iterable[int | float]] = None,
+) -> bool:
+    """Check target equality and, when provided, exact input-number usage."""
+    try:
+        value, literals, _ = _evaluate_expression(expression)
+        target_value = Fraction(str(target))
+    except (SyntaxError, ValueError, TypeError, ZeroDivisionError):
+        return False
+    if value != target_value:
+        return False
+    if numbers is not None:
+        expected = Counter(Fraction(str(number)) for number in numbers)
+        if Counter(literals) != expected:
+            return False
+    return True
 
 
 def length_bonus(
-    completion: str,
-    target_length: int = 200,
-    scale: float = 0.01,
+    think_tokens: int | str,
+    max_bonus: float = 1.0,
+    ceiling: int = 100,
+    tokenizer: Any = None,
+    **legacy: Any,
 ) -> float:
-    """Compute a think-length bonus reward (hackable signal).
+    """Linearly scale think-token count to ``max_bonus`` and clamp."""
+    if isinstance(think_tokens, str):
+        think = extract_think(think_tokens) or ""
+        token_count = count_tokens(think, tokenizer)
+        ceiling = int(legacy.get("target_length", ceiling))
+    else:
+        token_count = int(think_tokens)
+    if ceiling <= 0:
+        raise ValueError("ceiling must be positive")
+    return max(0.0, min(float(max_bonus), float(max_bonus) * max(0, token_count) / ceiling))
 
-    Awards increasing reward for longer <think> blocks. This is intentionally
-    a hackable signal — models can exploit it by generating verbose but
-    uninformative reasoning.
 
-    Args:
-        completion: The model's completion string.
-        target_length: Word count at which bonus is maximised.
-        scale: Controls how fast the bonus grows.
+def format_bonus(completion: str, bonus_value: float) -> float:
+    """Award a bonus only for a complete, ordered, non-empty response format."""
+    return float(bonus_value) if _FULL_FORMAT.fullmatch(completion) else 0.0
 
-    Returns:
-        Reward in [0.0, 1.0].
 
-    TODO:
-        - Replace word-count with actual token count using the tokenizer.
-        - Decide between linear and sigmoidal bonus curves.
-        - Calibrate target_length and scale against the training distribution.
-    """
+def format_reward(completion: str) -> float:
+    """Legacy normalized format score used by older callers."""
     parsed = parse_model_output(completion)
-    think_len = parsed.think_token_count
-    # TODO: Implement proper bonus curve (e.g., sigmoid or linear)
-    # Placeholder: simple linear normalisation
-    return min(1.0, scale * think_len)
+    if parsed.is_well_formed and _FULL_FORMAT.fullmatch(completion):
+        return 1.0
+    return 0.5 if parsed.has_think or parsed.has_answer else 0.0
 
 
 def length_penalty(
     completion: str,
     max_tokens: int,
     penalty_per_excess_token: float = 0.01,
+    tokenizer: Any = None,
 ) -> float:
-    """Compute a hard length-cap penalty (guardrail signal).
+    """Compatibility helper returning a positive soft over-cap penalty."""
+    think_tokens = count_tokens(extract_think(completion) or "", tokenizer)
+    return max(0, think_tokens - max_tokens) * penalty_per_excess_token
 
-    Returns a positive penalty value that is subtracted from the total reward
-    when the <think> block exceeds max_tokens.
 
-    Args:
-        completion: The model's completion string.
-        max_tokens: Maximum allowed tokens in the <think> block.
-        penalty_per_excess_token: Penalty magnitude per excess token.
+def answer_reward(
+    prompt: str,
+    completion: str,
+    answer: Optional[str] = None,
+    numbers: Optional[Iterable[int | float]] = None,
+) -> float:
+    """Return one for a safe, non-degenerate, valid Countdown expression."""
+    expression = extract_answer(completion)
+    if expression is None or answer is None or is_degenerate_solution(expression):
+        return 0.0
+    return float(expression_is_correct(expression, answer, numbers))
 
-    Returns:
-        Non-negative penalty value (0.0 if within cap).
 
-    TODO:
-        - Replace word-count with actual tokenizer token count.
-        - Decide: hard zero-reward cutoff vs. soft linear penalty.
-        - Consider whether truncation should happen at generation time instead.
-    """
-    parsed = parse_model_output(completion)
-    think_len = parsed.think_token_count
-    excess = max(0, think_len - max_tokens)
-    # TODO: Implement actual penalty function
-    return excess * penalty_per_excess_token
+def compute_reward_components(
+    completion: Any,
+    answer: str | int,
+    config: RewardConfig,
+    numbers: Optional[Iterable[int | float]] = None,
+    tokenizer: Any = None,
+) -> dict[str, float | int | bool]:
+    """Compute separable reward components for one completion."""
+    text = _completion_text(completion)
+    expression = extract_answer(text) or text.strip()
+    think_tokens = count_tokens(extract_think(text) or "", tokenizer)
+    degenerate = is_degenerate_solution(expression)
+    correct = (
+        not degenerate
+        and expression_is_correct(expression, answer, numbers)
+    )
+    return {
+        "correctness": config.correctness_weight if correct else 0.0,
+        "length_bonus": length_bonus(
+            think_tokens,
+            max_bonus=config.length_bonus_max,
+            ceiling=config.length_bonus_ceiling,
+        ),
+        "format_bonus": format_bonus(text, config.format_bonus),
+        "is_degenerate": degenerate,
+        "think_length": think_tokens,
+        "over_length_cap": bool(
+            config.hard_length_cap and think_tokens > config.hard_length_cap_tokens
+        ),
+    }
+
+
+def _as_list(value: Any, length: int, default: Any = None) -> list[Any]:
+    if value is None:
+        return [default] * length
+    if isinstance(value, (str, int, float)):
+        return [value] * length
+    result = list(value)
+    if len(result) == length:
+        return result
+    if len(result) == 1:
+        return result * length
+    raise ValueError(f"Expected {length} metadata values, got {len(result)}")
+
+
+def _log_components(components: list[dict[str, Any]]) -> None:
+    """Best-effort W&B component logging; TRL still logs the total reward."""
+    if not components:
+        return
+    try:
+        import wandb
+
+        if wandb.run is not None:
+            wandb.log(
+                {
+                    "reward/correctness_component": mean(c["correctness"] for c in components),
+                    "reward/length_component": mean(c["length_bonus"] for c in components),
+                    "reward/format_component": mean(c["format_bonus"] for c in components),
+                    "reward/degenerate_rate": mean(float(c["is_degenerate"]) for c in components),
+                    "reward/think_length": mean(c["think_length"] for c in components),
+                },
+                commit=False,
+            )
+    except (ImportError, RuntimeError):
+        logger.debug("W&B component logging unavailable", exc_info=True)
+
+
+def _make_reward_fn(cfg: RewardConfig, tokenizer: Any = None, include_length: bool = True) -> RewardFunction:
+    def reward_fn(
+        completions: list[Any],
+        prompts: Optional[list[Any]] = None,
+        answers: Optional[list[Any]] = None,
+        answer: Optional[list[Any]] = None,
+        nums: Optional[list[Any]] = None,
+        numbers: Optional[list[Any]] = None,
+        target: Optional[list[Any]] = None,
+        **_: Any,
+    ) -> list[float]:
+        size = len(completions)
+        answer_values = _as_list(answers if answers is not None else answer, size)
+        target_values = _as_list(target, size)
+        number_values = _as_list(nums if nums is not None else numbers, size)
+        components = []
+        totals = []
+        for i, completion in enumerate(completions):
+            ground_truth = answer_values[i] if answer_values[i] is not None else target_values[i]
+            if ground_truth is None:
+                raise ValueError("Reward function requires dataset column 'answer' or 'target'")
+            component = compute_reward_components(
+                completion,
+                ground_truth,
+                cfg,
+                numbers=number_values[i],
+                tokenizer=tokenizer,
+            )
+            components.append(component)
+            if component["over_length_cap"]:
+                totals.append(0.0)
+                continue
+            total = float(component["correctness"]) + float(component["format_bonus"])
+            if include_length:
+                total += float(component["length_bonus"])
+            totals.append(total)
+        _log_components(components)
+        return totals
+
+    reward_fn.__name__ = f"{cfg.type.value}_reward"
+    return reward_fn
+
+
+def reward_baseline(cfg: RewardConfig, tokenizer: Any = None) -> RewardFunction:
+    """C1: correctness and format, no length incentive."""
+    return _make_reward_fn(cfg, tokenizer=tokenizer, include_length=False)
+
+
+def reward_hackable(cfg: RewardConfig, tokenizer: Any = None) -> RewardFunction:
+    """C2: correctness, format and length incentive."""
+    return _make_reward_fn(cfg, tokenizer=tokenizer, include_length=True)
+
+
+def reward_guardrailed(cfg: RewardConfig, tokenizer: Any = None) -> RewardFunction:
+    """C3-C6 reward. KL is handled exclusively by TRL's ``beta``."""
+    return _make_reward_fn(cfg, tokenizer=tokenizer, include_length=True)
+
+
+def baseline_reward_fn(completions: list[Any], answers: list[Any], **kwargs: Any) -> list[float]:
+    return reward_baseline(RewardConfig(type=RewardType.BASELINE, format_bonus=0.15))(
+        completions=completions, answers=answers, **kwargs
+    )
+
+
+def hackable_reward_fn(completions: list[Any], answers: list[Any], **kwargs: Any) -> list[float]:
+    return reward_hackable(
+        RewardConfig(type=RewardType.HACKABLE, length_bonus_max=0.5, format_bonus=0.15)
+    )(completions=completions, answers=answers, **kwargs)
+
+
+def get_reward_fn(cfg: RewardConfig, tokenizer: Any = None) -> RewardFunction:
+    """Build the condition reward callable."""
+    factories = {
+        RewardType.BASELINE: reward_baseline,
+        RewardType.HACKABLE: reward_hackable,
+        RewardType.GUARDRAILED: reward_guardrailed,
+    }
+    try:
+        return factories[cfg.type](cfg, tokenizer)
+    except KeyError as exc:
+        raise ValueError(f"Unknown reward type: {cfg.type!r}") from exc

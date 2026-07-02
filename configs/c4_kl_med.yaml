@@ -1,9 +1,6 @@
 # =============================================================
 # c4_kl_med.yaml  —  Condition 4: Hackable reward + KL β=0.05
 # =============================================================
-# Hackable reward with a moderate KL divergence regularization.
-# Middle of the beta sweep (C3–C5).
-
 defaults:
   - base
 
@@ -14,12 +11,10 @@ experiment:
 
 reward:
   type: "guardrailed"
-  answer_reward_weight: 1.0
-  format_reward_weight: 0.3
-  length_bonus_weight: 0.1
-  kl_beta: 0.05               # Moderate KL penalty
-  max_reasoning_tokens: null
+  length_bonus_max: 0.5
+  format_bonus: 0.15
 
 training:
   output_dir: "outputs/c4_kl_med"
+  beta: 0.05
   seed: 42

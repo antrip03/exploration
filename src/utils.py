@@ -24,6 +24,7 @@ import logging
 import os
 import random
 import shutil
+import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Optional
@@ -69,7 +70,10 @@ def set_global_seed(seed: int) -> None:
 
     try:
         import transformers
-        transformers.set_seed(seed)
+        if hasattr(transformers, "set_seed"):
+            transformers.set_seed(seed)
+        else:
+            logger.debug("transformers.set_seed unavailable — skipping transformers seed setting.")
     except ImportError:
         logger.warning("transformers not available — skipping transformers seed setting.")
 
@@ -274,9 +278,21 @@ class CheckpointManager:
             - Read metric_file from each checkpoint directory.
             - Return the checkpoint with the highest metric value.
         """
-        # TODO: Implement best checkpoint selection
-        logger.warning("best_checkpoint() not yet fully implemented, returning latest.")
-        return self.latest_checkpoint()
+        best: Optional[Path] = None
+        best_value = float("-inf")
+        for checkpoint in self.list_checkpoints():
+            candidate = checkpoint / metric_file
+            if not candidate.exists():
+                continue
+            try:
+                data = load_json(candidate)
+                value = float(data[metric])
+            except (KeyError, TypeError, ValueError, json.JSONDecodeError):
+                continue
+            if value > best_value:
+                best = checkpoint
+                best_value = value
+        return best if best is not None else self.latest_checkpoint()
 
     def cleanup_old_checkpoints(self, keep_last_n: int = 3) -> None:
         """Delete all but the most recent n checkpoints.
@@ -321,10 +337,11 @@ def install_requirements(requirements_file: str = "requirements.txt") -> None:
         - Use subprocess to call pip install.
         - Handle quiet mode to avoid verbose output in Kaggle notebooks.
     """
-    import subprocess
     logger.info("Installing requirements from %s", requirements_file)
-    # TODO: subprocess.run(["pip", "install", "-r", requirements_file, "-q"], check=True)
-    raise NotImplementedError("install_requirements() not yet implemented.")
+    subprocess.run(
+        ["python", "-m", "pip", "install", "-r", requirements_file, "-q"],
+        check=True,
+    )
 
 
 def get_kaggle_output_dir() -> Path:

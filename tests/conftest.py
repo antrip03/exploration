@@ -122,7 +122,7 @@ def logging_config(tmp_path) -> LoggingConfig:
 def dataset_config() -> DatasetConfig:
     """Minimal DatasetConfig for unit tests."""
     return DatasetConfig(
-        name=DatasetName.COUNTDOWN,
+        name="Jiayi-Pan/Countdown-Tasks-3to4",
         max_train_samples=10,
         max_eval_samples=5,
     )

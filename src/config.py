@@ -14,7 +14,6 @@ Usage:
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
 from typing import Any, Optional
@@ -42,7 +41,6 @@ class DatasetName(str, Enum):
     """Supported dataset names."""
 
     COUNTDOWN = "countdown"
-    GSM8K = "gsm8k"
 
 
 class LogLevel(str, Enum):
@@ -64,6 +62,7 @@ class ModelConfig(BaseModel):
 
     Attributes:
         name: HuggingFace model identifier.
+        ref_model: HuggingFace reference model identifier.
         revision: Git revision of the model (tag / branch / commit SHA).
         dtype: Torch dtype string ('bfloat16', 'float16', 'float32').
         attn_implementation: Attention backend ('flash_attention_2' or 'eager').
@@ -74,6 +73,10 @@ class ModelConfig(BaseModel):
     name: str = Field(
         default="Qwen/Qwen2.5-1.5B-Instruct",
         description="HuggingFace model name or local path.",
+    )
+    ref_model: str = Field(
+        default="Qwen/Qwen2.5-1.5B-Instruct",
+        description="HuggingFace reference model name or local path.",
     )
     revision: str = Field(default="main", description="Model revision / tag.")
     dtype: str = Field(default="bfloat16", description="Torch computation dtype.")
@@ -101,7 +104,9 @@ class LoRAConfig(BaseModel):
         enabled: Whether to use LoRA.
         r: Rank of the low-rank decomposition matrices.
         alpha: LoRA scaling factor (effective lr scale = alpha / r).
+        lora_alpha: Alternate name for alpha.
         dropout: Dropout rate applied to LoRA layers.
+        lora_dropout: Alternate name for dropout.
         target_modules: List of module names to apply LoRA to.
         bias: Which bias parameters to train ('none', 'all', 'lora_only').
         task_type: PEFT task type string.
@@ -110,7 +115,9 @@ class LoRAConfig(BaseModel):
     enabled: bool = Field(default=True)
     r: int = Field(default=16, ge=1, description="LoRA rank.")
     alpha: int = Field(default=32, ge=1, description="LoRA alpha scaling factor.")
+    lora_alpha: Optional[int] = Field(default=None)
     dropout: float = Field(default=0.05, ge=0.0, le=1.0)
+    lora_dropout: Optional[float] = Field(default=None)
     target_modules: list[str] = Field(
         default_factory=lambda: [
             "q_proj", "k_proj", "v_proj", "o_proj",
@@ -119,6 +126,18 @@ class LoRAConfig(BaseModel):
     )
     bias: str = Field(default="none")
     task_type: str = Field(default="CAUSAL_LM")
+
+    @model_validator(mode="after")
+    def sync_lora_fields(self) -> "LoRAConfig":
+        if self.lora_alpha is not None:
+            self.alpha = self.lora_alpha
+        else:
+            self.lora_alpha = self.alpha
+        if self.lora_dropout is not None:
+            self.dropout = self.lora_dropout
+        else:
+            self.lora_dropout = self.dropout
+        return self
 
 
 class TrainingConfig(BaseModel):
@@ -143,6 +162,8 @@ class TrainingConfig(BaseModel):
         logging_steps: Logging frequency.
         bf16: Whether to use bfloat16 mixed precision.
         fp16: Whether to use float16 mixed precision (mutually exclusive with bf16).
+        beta: KL divergence penalty coefficient (0 = disabled).
+        max_completion_length: Maximum completion length.
     """
 
     output_dir: str = Field(default="outputs/experiment")
@@ -158,7 +179,8 @@ class TrainingConfig(BaseModel):
     dataloader_num_workers: int = Field(default=2, ge=0)
     remove_unused_columns: bool = Field(default=False)
     # GRPO-specific
-    num_generations: int = Field(default=8, ge=1, description="G — rollouts per prompt.")
+    num_generations: int = Field(default=8, ge=2, description="G — rollouts per prompt.")
+    generation_batch_size: Optional[int] = Field(default=8, ge=2)
     temperature: float = Field(default=0.9, gt=0.0)
     top_p: float = Field(default=0.95, gt=0.0, le=1.0)
     save_steps: int = Field(default=100, ge=1)
@@ -166,12 +188,19 @@ class TrainingConfig(BaseModel):
     logging_steps: int = Field(default=10, ge=1)
     fp16: bool = Field(default=False)
     bf16: bool = Field(default=True)
+    beta: float = Field(default=0.0, ge=0.0, description="KL coefficient; 0.0 = no KL")
+    max_completion_length: Optional[int] = Field(default=None)
 
     @model_validator(mode="after")
     def check_precision_flags(self) -> "TrainingConfig":
         """Ensure fp16 and bf16 are not both enabled."""
         if self.fp16 and self.bf16:
             raise ValueError("Only one of fp16 or bf16 can be enabled at a time.")
+        if (
+            self.generation_batch_size is not None
+            and self.generation_batch_size % self.num_generations != 0
+        ):
+            raise ValueError("generation_batch_size must be divisible by num_generations")
         return self
 
 
@@ -180,29 +209,47 @@ class RewardConfig(BaseModel):
 
     Attributes:
         type: Reward function type (baseline | hackable | guardrailed).
-        answer_reward_weight: Weight for answer-correctness reward.
-        format_reward_weight: Weight for formatting reward (think/answer tags).
-        length_bonus_weight: Weight for think-length bonus (hackable signal).
-        kl_beta: KL divergence penalty coefficient (0 = disabled).
-        max_reasoning_tokens: Hard cap on <think> block tokens (None = disabled).
+        correctness_weight: Weight for answer-correctness reward.
+        length_bonus_max: Maximum weight for length bonus.
+        length_bonus_ceiling: Token ceiling for length bonus.
+        format_bonus: Weight for correct <think>/<answer> format.
+        hard_length_cap: Use hard reasoning length cap.
+        hard_length_cap_tokens: Token count threshold for hard length cap.
+        answer_reward_weight: Legacy compatibility key.
+        format_reward_weight: Legacy compatibility key.
+        length_bonus_weight: Legacy compatibility key.
+        kl_beta: Legacy compatibility key.
+        max_reasoning_tokens: Legacy compatibility key.
     """
 
     type: RewardType = Field(default=RewardType.BASELINE)
+    correctness_weight: float = Field(default=1.0, ge=0.0)
+    length_bonus_max: float = Field(default=0.0, ge=0.0)
+    length_bonus_ceiling: int = Field(default=512, ge=1)
+    format_bonus: float = Field(default=0.0, ge=0.0)
+    hard_length_cap: bool = Field(default=False)
+    hard_length_cap_tokens: int = Field(default=0, ge=0)
+
+    # Legacy variables for compatibility with existing configs
     answer_reward_weight: float = Field(default=1.0, ge=0.0)
     format_reward_weight: float = Field(default=0.0, ge=0.0)
     length_bonus_weight: float = Field(default=0.0, ge=0.0)
-    kl_beta: float = Field(default=0.0, ge=0.0, description="KL penalty coefficient.")
-    max_reasoning_tokens: Optional[int] = Field(
-        default=None,
-        description="Hard cap on reasoning token count. None = no cap.",
-    )
+    kl_beta: float = Field(default=0.0, ge=0.0)
+    max_reasoning_tokens: Optional[int] = Field(default=None, ge=1)
 
-    @field_validator("max_reasoning_tokens")
-    @classmethod
-    def validate_max_tokens(cls, v: Optional[int]) -> Optional[int]:
-        if v is not None and v <= 0:
-            raise ValueError("max_reasoning_tokens must be a positive integer or None.")
-        return v
+    @model_validator(mode="after")
+    def sync_legacy_fields(self) -> "RewardConfig":
+        # If legacy fields are set, map them to standard ones
+        if self.answer_reward_weight != 1.0 and self.correctness_weight == 1.0:
+            self.correctness_weight = self.answer_reward_weight
+        if self.format_reward_weight != 0.0 and self.format_bonus == 0.0:
+            self.format_bonus = self.format_reward_weight
+        if self.length_bonus_weight != 0.0 and self.length_bonus_max == 0.0:
+            self.length_bonus_max = self.length_bonus_weight
+        if self.max_reasoning_tokens is not None:
+            self.hard_length_cap = True
+            self.hard_length_cap_tokens = self.max_reasoning_tokens
+        return self
 
 
 class GenerationConfig(BaseModel):
@@ -238,6 +285,7 @@ class LoggingConfig(BaseModel):
         use_tensorboard: Enable TensorBoard logging.
         use_csv: Enable CSV metrics logging.
         log_dir: Directory for all log files.
+        log_reward_components: Whether to log correctness/length/format separately.
     """
 
     level: LogLevel = Field(default=LogLevel.INFO)
@@ -247,6 +295,7 @@ class LoggingConfig(BaseModel):
     use_tensorboard: bool = Field(default=True)
     use_csv: bool = Field(default=True)
     log_dir: str = Field(default="outputs/logs")
+    log_reward_components: bool = Field(default=True)
 
 
 class DatasetConfig(BaseModel):
@@ -264,11 +313,15 @@ class DatasetConfig(BaseModel):
         countdown_num_numbers: Numbers in each Countdown puzzle.
     """
 
-    name: DatasetName = Field(default=DatasetName.COUNTDOWN)
+    name: str = Field(default="Jiayi-Pan/Countdown-Tasks-3to4")
     split_train: str = Field(default="train")
-    split_eval: str = Field(default="validation")
+    split_eval: Optional[str] = Field(
+        default=None,
+        description="Evaluation split. If absent, reserve a deterministic holdout from train.",
+    )
+    eval_holdout_seed: int = Field(default=42)
     max_train_samples: Optional[int] = Field(default=None, ge=1)
-    max_eval_samples: Optional[int] = Field(default=500, ge=1)
+    max_eval_samples: Optional[int] = Field(default=200, ge=1)
     preprocessing_num_workers: int = Field(default=4, ge=1)
     # Countdown-specific
     countdown_min_digits: int = Field(default=1, ge=1)
@@ -329,12 +382,25 @@ class ExperimentConfig(BaseModel):
         if not path.exists():
             raise FileNotFoundError(f"Config file not found: {path}")
         with open(path, "r", encoding="utf-8") as f:
-            raw: dict[str, Any] = yaml.safe_load(f)
-        # Remove OmegaConf defaults key if present
-        raw.pop("defaults", None)
+            raw: dict[str, Any] = yaml.safe_load(f) or {}
+
+        defaults = raw.pop("defaults", [])
+        if defaults:
+            merged: dict[str, Any] = {}
+            for default in defaults:
+                default_name = default if isinstance(default, str) else next(iter(default))
+                default_path = path.parent / f"{default_name}.yaml"
+                if not default_path.exists():
+                    raise FileNotFoundError(f"Base config not found: {default_path}")
+                with open(default_path, "r", encoding="utf-8") as f:
+                    base_raw = yaml.safe_load(f) or {}
+                base_raw.pop("defaults", None)
+                merged = _deep_merge(merged, base_raw)
+            raw = _deep_merge(merged, raw)
         # Flatten nested 'experiment' key if present
         experiment_meta = raw.pop("experiment", {})
         raw.update(experiment_meta)
+        raw = _resolve_placeholders(raw)
         logger.info("Loaded config from %s (condition_id=%s)", path, raw.get("condition_id"))
         return cls.model_validate(raw)
 
@@ -357,3 +423,26 @@ class ExperimentConfig(BaseModel):
         with open(path, "w", encoding="utf-8") as f:
             yaml.dump(self.to_dict(), f, default_flow_style=False, sort_keys=False)
         logger.info("Saved config to %s", path)
+
+
+def _deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
+    """Recursively merge mappings without mutating either input."""
+    result = dict(base)
+    for key, value in override.items():
+        if isinstance(value, dict) and isinstance(result.get(key), dict):
+            result[key] = _deep_merge(result[key], value)
+        else:
+            result[key] = value
+    return result
+
+
+def _resolve_placeholders(value: Any, condition_id: Optional[str] = None) -> Any:
+    """Resolve the project-specific condition placeholder in strings."""
+    if isinstance(value, dict):
+        condition = value.get("condition_id", condition_id)
+        return {key: _resolve_placeholders(item, condition) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_resolve_placeholders(item, condition_id) for item in value]
+    if isinstance(value, str) and condition_id is not None:
+        return value.replace("${experiment.condition_id}", condition_id)
+    return value

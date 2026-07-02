@@ -1,9 +1,6 @@
 # =============================================================
 # c2_hackable.yaml  —  Condition 2: Hackable reward (no guardrail)
 # =============================================================
-# Combines answer reward + think-length bonus + formatting reward.
-# No guardrail applied. Used to measure reward hacking extent.
-
 defaults:
   - base
 
@@ -14,12 +11,10 @@ experiment:
 
 reward:
   type: "hackable"
-  answer_reward_weight: 1.0
-  format_reward_weight: 0.3   # Reward for correct <think>/<answer> tags
-  length_bonus_weight: 0.1    # Bonus for longer think blocks (hackable signal)
-  kl_beta: 0.0
-  max_reasoning_tokens: null
+  length_bonus_max: 0.5
+  format_bonus: 0.15
 
 training:
   output_dir: "outputs/c2_hackable"
+  beta: 0.0
   seed: 42

@@ -1,61 +1,23 @@
-"""
-src/metrics.py
-==============
-Evaluation metrics for measuring performance and exploration diversity.
-
-This module defines all metrics used in the paper:
-  - pass@1, pass@k    : Task performance metrics
-  - unique_solution_count  : Solution diversity
-  - embedding_variance      : Semantic diversity of reasoning
-  - reasoning_length_stats  : Think-block length statistics
-  - exploration_gap         : pass@k − pass@1 (exploration proxy)
-
-All functions are placeholders — implementations follow in Phase 2.
-
-Usage:
-    from src.metrics import compute_all_metrics
-    metrics = compute_all_metrics(completions, answers, k=8)
-"""
+"""Performance and exploration metrics for Countdown evaluation."""
 
 from __future__ import annotations
 
-import logging
+import ast
 import math
 from dataclasses import dataclass, field
-from typing import Any, Optional
+from statistics import mean, median, pstdev
+from typing import Any, Iterable, Optional
 
-import numpy as np
-
-logger = logging.getLogger(__name__)
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Result containers
-# ─────────────────────────────────────────────────────────────────────────────
+from src.prompts import extract_answer, extract_think
+from src.reward_functions import count_tokens, expression_is_correct, is_degenerate_solution
 
 
 @dataclass
 class MetricsResult:
-    """Container for all computed evaluation metrics.
-
-    Attributes:
-        pass_at_1: Fraction of problems solved on the first attempt.
-        pass_at_k: Fraction of problems solved within k samples.
-        k: The k used for pass@k.
-        unique_solution_count: Mean unique correct solution count per problem.
-        embedding_variance: Mean embedding variance across generated completions.
-        reasoning_length_mean: Mean think-block word/token count.
-        reasoning_length_std: Standard deviation of think-block lengths.
-        reasoning_length_max: Maximum think-block length observed.
-        exploration_gap: pass@k − pass@1 (proxy for exploration).
-        extra: Additional arbitrary metrics.
-    """
-
     pass_at_1: float = 0.0
     pass_at_k: float = 0.0
     k: int = 1
     unique_solution_count: float = 0.0
-    embedding_variance: float = 0.0
     reasoning_length_mean: float = 0.0
     reasoning_length_std: float = 0.0
     reasoning_length_max: float = 0.0
@@ -63,246 +25,176 @@ class MetricsResult:
     extra: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
-        """Serialize to a flat dictionary for logging.
-
-        Returns:
-            A dict mapping metric names to values.
-        """
         return {
             "pass@1": self.pass_at_1,
             f"pass@{self.k}": self.pass_at_k,
             "unique_solution_count": self.unique_solution_count,
-            "embedding_variance": self.embedding_variance,
             "reasoning_length/mean": self.reasoning_length_mean,
             "reasoning_length/std": self.reasoning_length_std,
             "reasoning_length/max": self.reasoning_length_max,
             "exploration_gap": self.exploration_gap,
+            "embedding_variance": 0.0,
             **self.extra,
         }
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Metric functions
-# ─────────────────────────────────────────────────────────────────────────────
+def _correct(completion: str, target: str, numbers: Optional[Iterable[int]] = None) -> bool:
+    expression = extract_answer(completion)
+    return bool(
+        expression
+        and not is_degenerate_solution(expression)
+        and expression_is_correct(expression, target, numbers)
+    )
 
 
 def pass_at_1(
     completions: list[str],
-    ground_truths: list[str],
+    ground_truths: list[str] | str,
+    numbers_per_problem: Optional[list[list[int]]] = None,
 ) -> float:
-    """Compute pass@1: fraction of problems solved on the first attempt.
-
-    Args:
-        completions: List of single model completions, one per problem.
-        ground_truths: List of ground-truth answers, one per problem.
-
-    Returns:
-        Fraction in [0.0, 1.0].
-
-    Raises:
-        ValueError: If lengths of completions and ground_truths don't match.
-
-    TODO:
-        - Import and use answer_reward() for per-completion correctness.
-        - Handle Countdown expression evaluation vs. GSM8K numeric matching.
-    """
-    if len(completions) != len(ground_truths):
+    """Fraction of greedy completions that solve their problem."""
+    truths = [ground_truths] * len(completions) if isinstance(ground_truths, str) else ground_truths
+    if len(completions) != len(truths):
         raise ValueError(
-            f"Length mismatch: completions={len(completions)}, "
-            f"ground_truths={len(ground_truths)}"
+            f"Length mismatch: completions={len(completions)}, ground_truths={len(truths)}"
         )
-    # TODO: Implement correctness checking per completion
-    logger.debug("pass@1 not yet implemented, returning 0.0")
-    return 0.0
+    if not completions:
+        return 0.0
+    numbers = numbers_per_problem or [None] * len(completions)
+    return float(mean(_correct(c, str(a), n) for c, a, n in zip(completions, truths, numbers)))
 
 
 def pass_at_k(
-    completions_per_problem: list[list[str]],
-    ground_truths: list[str],
-    k: int,
+    completions_per_problem: list[list[str]] | list[str],
+    ground_truths: list[str] | str,
+    k: int = 8,
+    numbers_per_problem: Optional[list[list[int]]] = None,
 ) -> float:
-    """Compute pass@k: fraction of problems solved within k samples.
-
-    Uses the unbiased estimator from Chen et al. (2021):
-        pass@k = 1 - C(n-c, k) / C(n, k)
-
-    where n = total samples, c = correct samples per problem.
-
-    Args:
-        completions_per_problem: List of k completions per problem.
-        ground_truths: Ground-truth answer per problem.
-        k: Number of samples to consider.
-
-    Returns:
-        Estimated pass@k fraction in [0.0, 1.0].
-
-    Raises:
-        ValueError: If k > number of completions per problem.
-
-    References:
-        Chen et al. (2021). Evaluating Large Language Models Trained on Code.
-        arXiv:2107.03374.
-
-    TODO:
-        - Implement per-problem correctness counting.
-        - Apply the Chen et al. unbiased estimator.
-        - Handle the edge case where k > n (clip k).
-    """
+    """Fraction of problems with at least one correct result among the first ``k`` samples."""
     if not completions_per_problem:
         return 0.0
-    n_per_problem = len(completions_per_problem[0])
-    if k > n_per_problem:
-        raise ValueError(f"k={k} > completions per problem ({n_per_problem}).")
-    # TODO: Implement unbiased pass@k estimator
-    logger.debug("pass@k not yet implemented, returning 0.0")
-    return 0.0
+    if isinstance(completions_per_problem[0], str):
+        groups = [list(completions_per_problem)]  # type: ignore[list-item]
+    else:
+        groups = completions_per_problem  # type: ignore[assignment]
+    truths = [ground_truths] * len(groups) if isinstance(ground_truths, str) else ground_truths
+    if len(groups) != len(truths):
+        raise ValueError("Number of completion groups must match ground truths")
+    if any(k > len(group) for group in groups):
+        raise ValueError("k exceeds the number of completions for at least one problem")
+    numbers = numbers_per_problem or [None] * len(groups)
+    solved = [
+        any(_correct(completion, str(target), nums) for completion in group[:k])
+        for group, target, nums in zip(groups, truths, numbers)
+    ]
+    return float(mean(solved))
 
 
 def _pass_at_k_unbiased(n: int, c: int, k: int) -> float:
-    """Unbiased pass@k estimator (Chen et al., 2021).
-
-    Args:
-        n: Total number of samples for this problem.
-        c: Number of correct samples for this problem.
-        k: k for pass@k.
-
-    Returns:
-        Estimated pass@k for a single problem.
-
-    TODO:
-        - Verify numerical stability for large n, c, k.
-        - Handle edge case n < k.
-    """
+    """Chen et al. estimator, retained for analyses where more than k samples exist."""
+    if not 0 <= c <= n or not 1 <= k <= n:
+        raise ValueError("Require 0 <= c <= n and 1 <= k <= n")
     if n - c < k:
         return 1.0
-    # TODO: Implement C(n-c, k) / C(n, k) using math.comb
-    return 0.0
+    return 1.0 - math.comb(n - c, k) / math.comb(n, k)
+
+
+def canonicalize_expression(expression: str) -> str:
+    """Canonicalize arithmetic ASTs, flattening and sorting commutative operations."""
+    normalized = expression.replace("×", "*").replace("÷", "/").replace("−", "-")
+    tree = ast.parse(normalized, mode="eval")
+
+    def canonical(node: ast.AST) -> str:
+        if isinstance(node, ast.Expression):
+            return canonical(node.body)
+        if isinstance(node, ast.Constant) and isinstance(node.value, (int, float)):
+            return str(node.value)
+        if isinstance(node, ast.UnaryOp) and isinstance(node.op, (ast.USub, ast.UAdd)):
+            return ("-" if isinstance(node.op, ast.USub) else "+") + canonical(node.operand)
+        if isinstance(node, ast.BinOp):
+            symbol = {
+                ast.Add: "+",
+                ast.Sub: "-",
+                ast.Mult: "*",
+                ast.Div: "/",
+            }.get(type(node.op))
+            if symbol is None:
+                raise ValueError("Unsupported operator")
+            if symbol in {"+", "*"}:
+                operands: list[str] = []
+
+                def collect(part: ast.AST) -> None:
+                    if isinstance(part, ast.BinOp) and type(part.op) is type(node.op):
+                        collect(part.left)
+                        collect(part.right)
+                    else:
+                        operands.append(canonical(part))
+
+                collect(node)
+                return f"({symbol.join(sorted(operands))})"
+            return f"({canonical(node.left)}{symbol}{canonical(node.right)})"
+        raise ValueError("Unsupported expression")
+
+    return canonical(tree)
 
 
 def unique_solution_count(
-    completions_per_problem: list[list[str]],
-    correct_mask_per_problem: list[list[bool]],
-) -> float:
-    """Compute mean unique correct solution count per problem.
+    completions: list[str] | list[list[str]],
+    correct_mask_per_problem: Optional[list[list[bool]]] = None,
+) -> int | float:
+    """Count canonical correct expressions, or their mean across problem groups."""
+    if not completions:
+        return 0 if correct_mask_per_problem is None else 0.0
+    if isinstance(completions[0], str):
+        canonical = set()
+        for completion in completions:  # type: ignore[assignment]
+            expression = extract_answer(completion) or completion
+            try:
+                canonical.add(canonicalize_expression(expression))
+            except (SyntaxError, ValueError):
+                continue
+        return len(canonical)
 
-    Two solutions are 'unique' if their extracted <answer> strings differ.
-    This is a surface-level diversity measure.
-
-    Args:
-        completions_per_problem: Completions for each problem (outer list = problems).
-        correct_mask_per_problem: Boolean mask indicating correct completions.
-
-    Returns:
-        Mean number of unique correct solution strings per problem.
-
-    TODO:
-        - Extract answer strings from each completion.
-        - Count distinct answer expressions (not just numeric values).
-        - Consider normalising expressions (e.g., '3+1' == '1+3').
-    """
-    # TODO: Implement unique solution counting
-    logger.debug("unique_solution_count not yet implemented, returning 0.0")
-    return 0.0
-
-
-def embedding_variance(
-    completions: list[str],
-    model_name: str = "all-MiniLM-L6-v2",
-    think_only: bool = True,
-) -> float:
-    """Compute mean cosine-distance-based embedding variance of completions.
-
-    Embeds all completions (or their think blocks) using a sentence transformer,
-    then computes the mean pairwise variance as a proxy for semantic diversity.
-
-    Args:
-        completions: List of model completion strings.
-        model_name: SentenceTransformers model for embedding.
-        think_only: If True, embed only the <think> block content.
-
-    Returns:
-        Scalar variance value (higher = more diverse reasoning).
-
-    TODO:
-        - Load SentenceTransformer model (cache it to avoid re-loading).
-        - Extract think blocks before embedding if think_only=True.
-        - Compute pairwise cosine distances and return mean variance.
-        - Consider using PCA variance of the embedding matrix instead.
-    """
-    # TODO: Implement embedding variance
-    # from sentence_transformers import SentenceTransformer
-    # model = SentenceTransformer(model_name)
-    # embeddings = model.encode(completions)
-    # variance = np.var(embeddings, axis=0).mean()
-    logger.debug("embedding_variance not yet implemented, returning 0.0")
-    return 0.0
+    if correct_mask_per_problem is None:
+        raise ValueError("correct masks are required for grouped completions")
+    counts = []
+    for group, mask in zip(completions, correct_mask_per_problem):
+        counts.append(
+            unique_solution_count([c for c, is_correct in zip(group, mask) if is_correct])
+        )
+    return float(mean(counts)) if counts else 0.0
 
 
-def reasoning_length_statistics(
-    completions: list[str],
-) -> dict[str, float]:
-    """Compute descriptive statistics of <think> block lengths.
-
-    Args:
-        completions: List of model completion strings.
-
-    Returns:
-        Dict with keys: 'mean', 'std', 'max', 'min', 'median'.
-
-    TODO:
-        - Use tokenizer-based length instead of word count.
-        - Report percentiles (p25, p75, p95) for tail analysis.
-    """
-    from src.prompts import extract_think
-
-    lengths: list[int] = []
-    for c in completions:
-        think = extract_think(c)
-        if think is not None:
-            # TODO: Replace with tokenizer-based count
-            lengths.append(len(think.split()))
-        else:
-            lengths.append(0)
-
+def think_length_stats(completions: list[str], tokenizer: Any = None) -> dict[str, float]:
+    lengths = [count_tokens(extract_think(c) or "", tokenizer) for c in completions]
     if not lengths:
         return {"mean": 0.0, "std": 0.0, "max": 0.0, "min": 0.0, "median": 0.0}
-
-    arr = np.array(lengths, dtype=float)
     return {
-        "mean": float(np.mean(arr)),
-        "std": float(np.std(arr)),
-        "max": float(np.max(arr)),
-        "min": float(np.min(arr)),
-        "median": float(np.median(arr)),
+        "mean": float(mean(lengths)),
+        "std": float(pstdev(lengths)),
+        "max": float(max(lengths)),
+        "min": float(min(lengths)),
+        "median": float(median(lengths)),
     }
 
 
+reasoning_length_statistics = think_length_stats
+
+
+def embedding_variance(*_: Any, **__: Any) -> float:
+    """Deprecated metric retained as an import-compatible no-op."""
+    return 0.0
+
+
 def exploration_gap(
-    pass_at_1_score: float,
-    pass_at_k_score: float,
+    pass_at_1_score: Optional[float] = None,
+    pass_at_k_score: Optional[float] = None,
+    **kwargs: float,
 ) -> float:
-    """Compute the exploration gap: pass@k − pass@1.
-
-    A large gap indicates the model has high exploration potential
-    (it can solve more problems given more attempts) but low single-shot
-    precision. A small gap suggests either consistently high performance
-    or consistently low exploration.
-
-    Args:
-        pass_at_1_score: Precomputed pass@1 value in [0, 1].
-        pass_at_k_score: Precomputed pass@k value in [0, 1].
-
-    Returns:
-        Exploration gap value in [0, 1]. Higher = more exploration benefit.
-    """
-    gap = pass_at_k_score - pass_at_1_score
-    logger.debug("Exploration gap: %.4f", gap)
-    return max(0.0, gap)  # Clamp to non-negative
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Aggregation
-# ─────────────────────────────────────────────────────────────────────────────
+    """Return ``pass@k - pass@1``, clamped against numerical negatives."""
+    p1 = pass_at_1_score if pass_at_1_score is not None else kwargs["pass_1"]
+    pk = pass_at_k_score if pass_at_k_score is not None else kwargs["pass_k"]
+    return max(0.0, float(pk) - float(p1))
 
 
 def compute_all_metrics(
@@ -310,46 +202,37 @@ def compute_all_metrics(
     ground_truths: list[str],
     k: int = 8,
     compute_embeddings: bool = False,
+    greedy_completions: Optional[list[str]] = None,
+    numbers_per_problem: Optional[list[list[int]]] = None,
+    tokenizer: Any = None,
 ) -> MetricsResult:
-    """Compute all evaluation metrics and return a MetricsResult.
-
-    Args:
-        completions_per_problem: k completions per problem.
-        ground_truths: Ground-truth answer per problem.
-        k: k for pass@k computation.
-        compute_embeddings: Whether to run the (expensive) embedding variance.
-
-    Returns:
-        A populated MetricsResult dataclass.
-
-    TODO:
-        - Wire up all individual metric functions once implemented.
-        - Handle failures gracefully (log and return 0.0 for failed metrics).
-    """
-    logger.info("Computing metrics for %d problems, k=%d", len(ground_truths), k)
-
-    # Single completions for pass@1
-    first_completions = [c[0] if c else "" for c in completions_per_problem]
-
-    p1 = pass_at_1(first_completions, ground_truths)
-    pk = pass_at_k(completions_per_problem, ground_truths, k=k)
-    gap = exploration_gap(p1, pk)
-
-    flat_completions = [c for cs in completions_per_problem for c in cs]
-    length_stats = reasoning_length_statistics(flat_completions)
-
-    emb_var = 0.0
-    if compute_embeddings:
-        emb_var = embedding_variance(flat_completions)
-
+    """Compute aggregate metrics from sampled and separately greedy outputs."""
+    del compute_embeddings
+    greedy = greedy_completions or [group[0] if group else "" for group in completions_per_problem]
+    p1 = pass_at_1(greedy, ground_truths, numbers_per_problem)
+    pk = pass_at_k(completions_per_problem, ground_truths, k, numbers_per_problem)
+    masks = [
+        [_correct(c, str(target), nums) for c in group]
+        for group, target, nums in zip(
+            completions_per_problem,
+            ground_truths,
+            numbers_per_problem or [None] * len(ground_truths),
+        )
+    ]
+    unique = unique_solution_count(completions_per_problem, masks)
+    flat = [completion for group in completions_per_problem for completion in group]
+    lengths = think_length_stats(flat, tokenizer)
     return MetricsResult(
         pass_at_1=p1,
         pass_at_k=pk,
         k=k,
-        unique_solution_count=0.0,  # TODO
-        embedding_variance=emb_var,
-        reasoning_length_mean=length_stats["mean"],
-        reasoning_length_std=length_stats["std"],
-        reasoning_length_max=length_stats["max"],
-        exploration_gap=gap,
+        unique_solution_count=float(unique),
+        reasoning_length_mean=lengths["mean"],
+        reasoning_length_std=lengths["std"],
+        reasoning_length_max=lengths["max"],
+        exploration_gap=exploration_gap(p1, pk),
+        extra={
+            "reasoning_length/min": lengths["min"],
+            "reasoning_length/median": lengths["median"],
+        },
     )

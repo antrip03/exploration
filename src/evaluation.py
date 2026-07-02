@@ -1,19 +1,4 @@
-"""
-src/evaluation.py
-=================
-Post-training evaluation pipeline.
-
-Runs systematic evaluation of trained checkpoints across all conditions,
-computes all metrics, and saves results to disk.
-
-Usage:
-    from src.evaluation import EvaluationPipeline
-    from src.config import ExperimentConfig
-
-    cfg = ExperimentConfig.from_yaml("configs/c1_baseline.yaml")
-    pipeline = EvaluationPipeline(cfg)
-    results = pipeline.run(checkpoint_path="outputs/c1_baseline/checkpoint-final")
-"""
+"""Inference-only checkpoint evaluation with separate greedy and sampled passes."""
 
 from __future__ import annotations
 
@@ -22,71 +7,31 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Optional
 
-from src.config import ExperimentConfig, GenerationConfig
+from src.config import ExperimentConfig
+from src.generation import generate_batch, generate_k_completions
 from src.metrics import MetricsResult, compute_all_metrics
+from src.utils import save_json, save_jsonl
 
 logger = logging.getLogger(__name__)
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Result container
-# ─────────────────────────────────────────────────────────────────────────────
-
-
 @dataclass
 class EvaluationResult:
-    """Container for evaluation results for a single checkpoint.
-
-    Attributes:
-        condition_id: Experimental condition identifier.
-        checkpoint_path: Path to the evaluated checkpoint.
-        metrics: Computed MetricsResult.
-        completions_sample: A sample of raw model completions for qualitative review.
-        error: Error message if evaluation failed.
-    """
-
     condition_id: str
     checkpoint_path: str
     metrics: Optional[MetricsResult] = None
     completions_sample: list[str] = field(default_factory=list)
+    per_problem: list[dict[str, Any]] = field(default_factory=list)
     error: Optional[str] = None
 
     @property
     def success(self) -> bool:
-        """Whether evaluation completed without errors."""
         return self.error is None and self.metrics is not None
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Pipeline
-# ─────────────────────────────────────────────────────────────────────────────
-
-
 class EvaluationPipeline:
-    """Post-training evaluation pipeline.
-
-    Loads a checkpoint, generates completions on an eval dataset,
-    computes all metrics, and saves results.
-
-    Attributes:
-        cfg: Full experiment configuration.
-        generation_cfg: Generation parameters used during eval.
-    """
-
-    def __init__(
-        self,
-        cfg: ExperimentConfig,
-    ) -> None:
-        """Initialise the evaluation pipeline.
-
-        Args:
-            cfg: Full ExperimentConfig for the condition being evaluated.
-        """
+    def __init__(self, cfg: ExperimentConfig) -> None:
         self.cfg = cfg
-        self.generation_cfg: GenerationConfig = cfg.generation
-        logger.info(
-            "EvaluationPipeline initialised — condition: %s", cfg.condition_id
-        )
 
     def run(
         self,
@@ -95,33 +40,68 @@ class EvaluationPipeline:
         k: int = 8,
         output_dir: Optional[str] = None,
     ) -> EvaluationResult:
-        """Run the full evaluation pipeline on a checkpoint.
+        from src.dataset import format_prompt, load_countdown_dataset
+        from src.trainer import GRPOExperimentTrainer
 
-        Args:
-            checkpoint_path: Path to the model checkpoint directory.
-            eval_dataset: HuggingFace Dataset to evaluate on.
-                If None, loads from cfg.dataset.
-            k: Number of samples for pass@k computation.
-            output_dir: Where to save evaluation results. Defaults to
-                cfg.training.output_dir / "eval".
+        if eval_dataset is None:
+            _, eval_dataset = load_countdown_dataset(self.cfg.dataset)
 
-        Returns:
-            An EvaluationResult with computed metrics.
-
-        TODO:
-            - Load model from checkpoint_path via trainer.load().
-            - Load eval_dataset if not provided.
-            - Call generate_completions() for each problem.
-            - Call compute_all_metrics() on the completions.
-            - Save results via save_results().
-        """
-        logger.info(
-            "Running evaluation on checkpoint: %s", checkpoint_path
+        wrapper = GRPOExperimentTrainer(self.cfg)
+        wrapper.load(checkpoint_path)
+        formatted = eval_dataset.map(
+            lambda row: format_prompt(row, wrapper.tokenizer),
+            desc="Applying chat template for evaluation",
         )
-        # TODO: Implement full evaluation pipeline
-        raise NotImplementedError(
-            "EvaluationPipeline.run() not yet implemented. See TODOs."
+        prompts = [str(row["prompt"]) for row in formatted]
+        targets = [str(row["target"]) for row in formatted]
+        numbers = [list(row["nums"]) for row in formatted]
+
+        greedy_cfg = self.cfg.generation.model_copy(
+            update={"do_sample": False, "num_return_sequences": 1}
         )
+        greedy = generate_batch(
+            wrapper.model,
+            wrapper.tokenizer,
+            prompts,
+            greedy_cfg,
+            batch_size=1,
+        )
+        sampled = self.generate_completions(
+            wrapper.model,
+            wrapper.tokenizer,
+            prompts,
+            k=k,
+        )
+        metrics = compute_all_metrics(
+            sampled,
+            targets,
+            k=k,
+            greedy_completions=greedy,
+            numbers_per_problem=numbers,
+            tokenizer=wrapper.tokenizer,
+        )
+        per_problem = [
+            {
+                "target": target,
+                "nums": nums,
+                "prompt": prompt,
+                "greedy_completion": greedy_completion,
+                "sampled_completions": completions,
+            }
+            for target, nums, prompt, greedy_completion, completions in zip(
+                targets, numbers, prompts, greedy, sampled
+            )
+        ]
+        result = EvaluationResult(
+            condition_id=self.cfg.condition_id,
+            checkpoint_path=checkpoint_path,
+            metrics=metrics,
+            completions_sample=[item for group in sampled[:5] for item in group[:2]],
+            per_problem=per_problem,
+        )
+        destination = output_dir or str(Path(self.cfg.training.output_dir) / "eval")
+        self.save_results(result, destination)
+        return result
 
     def generate_completions(
         self,
@@ -130,84 +110,59 @@ class EvaluationPipeline:
         prompts: list[str],
         k: int = 8,
     ) -> list[list[str]]:
-        """Generate k completions per prompt using the loaded model.
-
-        Args:
-            model: Loaded language model.
-            tokenizer: Loaded tokenizer.
-            prompts: List of input prompts.
-            k: Number of completions per prompt.
-
-        Returns:
-            A list of lists: for each prompt, k completion strings.
-
-        TODO:
-            - Batch prompts for efficient GPU utilisation.
-            - Respect generation_cfg parameters (temperature, top_p, etc.).
-            - Handle OOM by reducing batch size dynamically.
-        """
-        logger.info(
-            "Generating %d completions for %d prompts.", k, len(prompts)
+        sample_cfg = self.cfg.generation.model_copy(
+            update={"do_sample": True, "temperature": 0.7}
         )
-        # TODO: Implement generation loop using src.generation
-        raise NotImplementedError(
-            "generate_completions() not yet implemented."
+        return generate_k_completions(
+            model,
+            tokenizer,
+            prompts,
+            sample_cfg,
+            k=k,
+            batch_size=1,
         )
 
-    def save_results(
-        self,
-        result: EvaluationResult,
-        output_dir: str,
-    ) -> None:
-        """Save evaluation results to disk.
-
-        Saves:
-          - metrics.json      : All scalar metrics
-          - completions.jsonl : Sample completions for qualitative review
-          - summary.txt       : Human-readable summary
-
-        Args:
-            result: The EvaluationResult to save.
-            output_dir: Directory to save files to.
-
-        TODO:
-            - Implement JSON serialisation and file writing.
-            - Append results to a cross-condition summary CSV.
-        """
+    def save_results(self, result: EvaluationResult, output_dir: str) -> None:
         out = Path(output_dir)
         out.mkdir(parents=True, exist_ok=True)
-        logger.info("Saving evaluation results to %s", out)
-        # TODO: Save metrics.json, completions.jsonl, summary.txt
-        raise NotImplementedError("save_results() not yet implemented.")
+        payload = {
+            "condition_id": result.condition_id,
+            "checkpoint_path": result.checkpoint_path,
+            "success": result.success,
+            "error": result.error,
+            "metrics": result.metrics.to_dict() if result.metrics else None,
+        }
+        save_json(payload, out / "eval_results.json")
+        save_json(payload, out / "metrics.json")
+        save_jsonl(result.per_problem, out / "per_problem_results.jsonl")
+        summary = "\n".join(
+            [f"{key}: {value}" for key, value in (payload["metrics"] or {}).items()]
+        )
+        (out / "summary.txt").write_text(summary + "\n", encoding="utf-8")
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Cross-condition comparison
-# ─────────────────────────────────────────────────────────────────────────────
-
-
-def compare_conditions(
-    results: list[EvaluationResult],
+def run_evaluation(
+    checkpoint_path: str,
+    config: ExperimentConfig,
+    eval_dataset: Optional[Any] = None,
+    k: int = 8,
+    output_dir: Optional[str] = None,
 ) -> dict[str, Any]:
-    """Compare evaluation results across experimental conditions.
+    """Functional entry point used by the CLI."""
+    result = EvaluationPipeline(config).run(
+        checkpoint_path=checkpoint_path,
+        eval_dataset=eval_dataset,
+        k=k,
+        output_dir=output_dir,
+    )
+    if not result.success or result.metrics is None:
+        raise RuntimeError(result.error or "Evaluation failed")
+    return result.metrics.to_dict()
 
-    Produces a summary table for paper reporting.
 
-    Args:
-        results: List of EvaluationResults, one per condition.
-
-    Returns:
-        Dict mapping condition_id to metrics dict.
-
-    TODO:
-        - Build a pandas DataFrame with all metrics.
-        - Compute relative changes vs. C1 baseline.
-        - Export to CSV and LaTeX table format.
-    """
-    logger.info("Comparing %d conditions.", len(results))
-    # TODO: Implement cross-condition comparison
-    comparison: dict[str, Any] = {}
-    for r in results:
-        if r.success and r.metrics is not None:
-            comparison[r.condition_id] = r.metrics.to_dict()
-    return comparison
+def compare_conditions(results: list[EvaluationResult]) -> dict[str, Any]:
+    return {
+        result.condition_id: result.metrics.to_dict()
+        for result in results
+        if result.success and result.metrics is not None
+    }

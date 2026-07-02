@@ -1,9 +1,6 @@
 # =============================================================
 # c3_kl_low.yaml  —  Condition 3: Hackable reward + KL β=0.01
 # =============================================================
-# Hackable reward with a weak KL divergence regularization.
-# Part of the beta sweep (C3–C5).
-
 defaults:
   - base
 
@@ -14,12 +11,10 @@ experiment:
 
 reward:
   type: "guardrailed"
-  answer_reward_weight: 1.0
-  format_reward_weight: 0.3
-  length_bonus_weight: 0.1
-  kl_beta: 0.01               # Weak KL penalty
-  max_reasoning_tokens: null
+  length_bonus_max: 0.5
+  format_bonus: 0.15
 
 training:
   output_dir: "outputs/c3_kl_low"
+  beta: 0.01
   seed: 42

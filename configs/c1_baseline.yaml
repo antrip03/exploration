@@ -1,9 +1,6 @@
 # =============================================================
 # c1_baseline.yaml  —  Condition 1: Baseline reward
 # =============================================================
-# Pure answer-correctness reward. No hackable signals.
-# This is the clean control condition.
-
 defaults:
   - base
 
@@ -14,12 +11,10 @@ experiment:
 
 reward:
   type: "baseline"
-  answer_reward_weight: 1.0
-  format_reward_weight: 0.0
-  length_bonus_weight: 0.0
-  kl_beta: 0.0
-  max_reasoning_tokens: null
+  length_bonus_max: 0.0
+  format_bonus: 0.15
 
 training:
   output_dir: "outputs/c1_baseline"
+  beta: 0.0
   seed: 42

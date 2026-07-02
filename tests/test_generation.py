@@ -1,80 +1,56 @@
-"""
-tests/test_generation.py
-========================
-Tests for src/generation.py — text generation utilities.
-"""
-
 from __future__ import annotations
 
-import pytest
-
-from src.generation import cfg_to_generate_kwargs, detect_device
 from src.config import GenerationConfig
+from src.generation import cfg_to_generate_kwargs, detect_device, generate_batch, generate_k_completions, generate_single
 
 
-class TestCfgToGenerateKwargs:
-    def test_returns_dict(self):
-        """cfg_to_generate_kwargs returns a dict."""
-        cfg = GenerationConfig()
-        kwargs = cfg_to_generate_kwargs(cfg)
-        assert isinstance(kwargs, dict)
-
-    def test_contains_required_keys(self):
-        """Returned dict contains all expected generate() keys."""
-        cfg = GenerationConfig()
-        kwargs = cfg_to_generate_kwargs(cfg)
-        for key in ("max_new_tokens", "do_sample", "repetition_penalty"):
-            assert key in kwargs
-
-    def test_sampling_params_none_when_greedy(self):
-        """temperature and top_p are None when do_sample=False."""
-        cfg = GenerationConfig(do_sample=False)
-        kwargs = cfg_to_generate_kwargs(cfg)
-        assert kwargs["temperature"] is None
-        assert kwargs["top_p"] is None
-
-    def test_max_new_tokens_correct(self):
-        """max_new_tokens matches config."""
-        cfg = GenerationConfig(max_new_tokens=256)
-        kwargs = cfg_to_generate_kwargs(cfg)
-        assert kwargs["max_new_tokens"] == 256
+def test_cfg_to_generate_kwargs_matches_sampling_mode():
+    sampled = cfg_to_generate_kwargs(GenerationConfig())
+    greedy = cfg_to_generate_kwargs(GenerationConfig(do_sample=False))
+    assert sampled["temperature"] == 0.9
+    assert "temperature" not in greedy
+    assert sampled["max_new_tokens"] == 512
 
 
-class TestDetectDevice:
-    def test_returns_string(self):
-        """detect_device returns a non-empty string."""
-        device = detect_device()
-        assert isinstance(device, str)
-        assert len(device) > 0
-
-    def test_returns_valid_device(self):
-        """detect_device returns one of the expected device strings."""
-        device = detect_device()
-        assert device in ("cuda", "mps", "cpu")
+def test_detect_device_returns_string():
+    assert detect_device() in {"cuda", "mps", "cpu"}
 
 
-class TestGenerateSingle:
-    def test_raises_not_implemented(self):
-        """generate_single raises NotImplementedError."""
-        from src.generation import generate_single
-        cfg = GenerationConfig()
-        with pytest.raises(NotImplementedError):
-            generate_single(None, None, "prompt", cfg)
+def test_generation_helpers_use_model_generate(monkeypatch):
+    class DummyTensor:
+        shape = (1, 4)
 
+        def to(self, *_args, **_kwargs):
+            return self
 
-class TestGenerateBatch:
-    def test_raises_not_implemented(self):
-        """generate_batch raises NotImplementedError."""
-        from src.generation import generate_batch
-        cfg = GenerationConfig()
-        with pytest.raises(NotImplementedError):
-            generate_batch(None, None, ["prompt"], cfg)
+    class DummyTokenizer:
+        pad_token_id = 0
+        eos_token = "</s>"
+        padding_side = "right"
 
+        def __call__(self, prompts, return_tensors="pt", padding=True, truncation=True):
+            return {"input_ids": DummyTensor()}
 
-class TestGenerateKCompletions:
-    def test_raises_not_implemented(self):
-        """generate_k_completions raises NotImplementedError."""
-        from src.generation import generate_k_completions
-        cfg = GenerationConfig()
-        with pytest.raises(NotImplementedError):
-            generate_k_completions(None, None, ["prompt"], cfg, k=4)
+        def batch_decode(self, sequences, skip_special_tokens=True):
+            return ["answer"] * len(sequences)
+
+    class DummyModel:
+        def parameters(self):
+            return []
+
+        def generate(self, **kwargs):
+            import types
+
+            input_ids = kwargs["input_ids"]
+            return type("Out", (), {"__getitem__": lambda self, item: self, "shape": (1, 6)})
+
+    tokenizer = DummyTokenizer()
+    model = DummyModel()
+    cfg = GenerationConfig(max_new_tokens=2, do_sample=False)
+    def fake_generate_batch_once(_model, _tokenizer, prompts, cfg, device=None):
+        return ["answer"] * (len(prompts) * cfg.num_return_sequences)
+
+    monkeypatch.setattr("src.generation._generate_batch_once", fake_generate_batch_once)
+    assert generate_single(model, tokenizer, "prompt", cfg) == "answer"
+    assert generate_batch(model, tokenizer, ["a", "b"], cfg, batch_size=1) == ["answer", "answer"]
+    assert generate_k_completions(model, tokenizer, ["a"], cfg, k=2) == [["answer", "answer"]]
