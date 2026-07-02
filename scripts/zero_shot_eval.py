@@ -26,7 +26,7 @@ def parse_args() -> argparse.Namespace:
         "--max-samples",
         type=int,
         default=None,
-        help="Maximum number of evaluation examples to use. Defaults to 20 on CUDA and 10 on CPU.",
+        help="Maximum number of evaluation examples to use. Defaults to 200 on CUDA and 50 on CPU.",
     )
     parser.add_argument(
         "--batch-size",
@@ -42,7 +42,7 @@ def main() -> None:
     setup_python_logging(level="INFO")
     cfg = ExperimentConfig.from_yaml(args.config)
     _, eval_dataset = load_dataset_for_task(cfg.dataset)
-    default_max_samples = 20 if torch.cuda.is_available() else 10
+    default_max_samples = 200 if torch.cuda.is_available() else 50
     max_samples = args.max_samples if args.max_samples is not None else default_max_samples
     eval_dataset = eval_dataset.select(range(min(max_samples, len(eval_dataset))))
 
