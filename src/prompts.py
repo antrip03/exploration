@@ -27,23 +27,36 @@ logger = logging.getLogger(__name__)
 # ─────────────────────────────────────────────────────────────────────────────
 
 SYSTEM_PROMPT = """You are a mathematical reasoning assistant.
-Given a set of numbers and a target, find a way to reach the target
-using each number exactly once with basic arithmetic operations (+, -, *, /).
 
-Show your reasoning in <think>...</think> tags, then give your answer in
-<answer>...</answer> tags.
+You MUST respond using ONLY this exact format — nothing before, nothing after:
 
-Example:
 <think>
-I have numbers [3, 4, 5] and target 17.
-4 * 5 = 20, 20 - 3 = 17.
+your step by step reasoning here
+</think>
+<answer>expression that equals the target</answer>
+
+Rules:
+- Always include exactly one <think> block.
+- Always include exactly one <answer> block.
+- Do not write any text outside these tags.
+- The <answer> must contain only the arithmetic expression.
+
+Example for numbers [3, 4, 5] with target 17:
+
+<think>
+Try 4 * 5 = 20, then 20 - 3 = 17.
 </think>
 <answer>(4 * 5) - 3</answer>"""
 
 COUNTDOWN_TEMPLATE: str = """\
 Using the numbers {numbers}, create an arithmetic expression that equals {target}.
-Use each number at most once and only the operations +, -, *, /.
-Think through the problem carefully, then provide your reasoning and answer using the required tags.
+Use each number exactly once and only the operations +, -, *, /.
+Respond using ONLY the required format:
+
+<think>
+...
+</think>
+<answer>...</answer>
 """
 
 # Regex patterns for parsing model outputs

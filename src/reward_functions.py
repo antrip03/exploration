@@ -198,14 +198,40 @@ def compute_reward_components(
     tokenizer: Any = None,
 ) -> dict[str, float | int | bool]:
     """Compute separable reward components for one completion."""
+
     text = _completion_text(completion)
-    expression = extract_answer(text) or text.strip()
-    think_tokens = count_tokens(extract_think(text) or "", tokenizer)
+
+    think = extract_think(text) or ""
+    think_tokens = count_tokens(think, tokenizer)
+
+    expression = extract_answer(text)
+
+    # Enforce the required response format:
+    # if there is no <answer> tag, the completion receives no reward.
+    if expression is None:
+        return {
+            "correctness": 0.0,
+            "length_bonus": 0.0,
+            "format_bonus": 0.0,
+            "is_degenerate": False,
+            "think_length": think_tokens,
+            "over_length_cap": bool(
+                config.hard_length_cap
+                and think_tokens > config.hard_length_cap_tokens
+            ),
+        }
+
     degenerate = is_degenerate_solution(expression)
+
     correct = (
         not degenerate
-        and expression_is_correct(expression, answer, numbers)
+        and expression_is_correct(
+            expression,
+            answer,
+            numbers,
+        )
     )
+
     return {
         "correctness": config.correctness_weight if correct else 0.0,
         "length_bonus": length_bonus(
@@ -213,14 +239,17 @@ def compute_reward_components(
             max_bonus=config.length_bonus_max,
             ceiling=config.length_bonus_ceiling,
         ),
-        "format_bonus": format_bonus(text, config.format_bonus),
+        "format_bonus": format_bonus(
+            text,
+            config.format_bonus,
+        ),
         "is_degenerate": degenerate,
         "think_length": think_tokens,
         "over_length_cap": bool(
-            config.hard_length_cap and think_tokens > config.hard_length_cap_tokens
+            config.hard_length_cap
+            and think_tokens > config.hard_length_cap_tokens
         ),
     }
-
 
 def _as_list(value: Any, length: int, default: Any = None) -> list[Any]:
     if value is None:
