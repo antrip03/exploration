@@ -169,6 +169,13 @@ class GRPOExperimentTrainer:
         if self.model is None or self.tokenizer is None:
             raise RuntimeError("Call load_model() before setup_trainer().")
         from trl import GRPOConfig, GRPOTrainer
+        from src.dataset import format_prompt
+        import functools
+
+        fmt = functools.partial(format_prompt, tokenizer=self.tokenizer)
+        train_dataset = train_dataset.map(fmt, desc="Applying chat template to train")
+        if eval_dataset is not None:
+            eval_dataset = eval_dataset.map(fmt, desc="Applying chat template to eval")
 
         t = self.cfg.training
         report_to = []
@@ -208,6 +215,9 @@ class GRPOExperimentTrainer:
             run_name=self.cfg.condition_id,
             log_completions=True,
         )
+        print("=" * 80)
+        print(train_dataset[0]["prompt"])
+        print("=" * 80)
         self.trainer = GRPOTrainer(
             model=self.model,
             reward_funcs=[self._reward_fn],

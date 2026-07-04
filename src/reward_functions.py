@@ -16,6 +16,7 @@ from src.prompts import extract_answer, extract_think, parse_model_output
 
 logger = logging.getLogger(__name__)
 RewardFunction = Callable[..., list[float]]
+_DEBUG_PRINTS = 0
 
 _ALLOWED_BINOPS = {
     ast.Add: operator.add,
@@ -28,6 +29,8 @@ _FULL_FORMAT = re.compile(
     r"^\s*<think>\s*.+?\s*</think>\s*<answer>\s*.+?\s*</answer>\s*$",
     re.DOTALL,
 )
+_THINK_PRESENT = re.compile(r"<think>.*?</think>", re.DOTALL)
+_ANSWER_PRESENT = re.compile(r"<answer>.*?</answer>", re.DOTALL)
 
 
 def _completion_text(completion: Any) -> str:
@@ -120,6 +123,8 @@ def expression_is_correct(
     numbers: Optional[Iterable[int | float]] = None,
 ) -> bool:
     """Check target equality and, when provided, exact input-number usage."""
+    # Strip trailing "= <number>" that model sometimes appends e.g. "(64-62)*19 = 17"
+    expression = re.sub(r'\s*=\s*[\d.]+\s*$', '', expression.strip())
     try:
         value, literals, _ = _evaluate_expression(expression)
         target_value = Fraction(str(target))
@@ -154,8 +159,10 @@ def length_bonus(
 
 
 def format_bonus(completion: str, bonus_value: float) -> float:
-    """Award a bonus only for a complete, ordered, non-empty response format."""
-    return float(bonus_value) if _FULL_FORMAT.fullmatch(completion) else 0.0
+    """Award bonus if both think and answer tags are present and closed."""
+    has_think = bool(_THINK_PRESENT.search(completion))
+    has_answer = bool(_ANSWER_PRESENT.search(completion))
+    return float(bonus_value) if (has_think and has_answer) else 0.0
 
 
 def format_reward(completion: str) -> float:
@@ -231,6 +238,11 @@ def compute_reward_components(
             numbers,
         )
     )
+    if _DEBUG_PRINTS < 5:
+        print("Extracted answer:", expression)
+        print("Target:", answer)
+        print("Numbers:", numbers)
+        print("Correct:", correct)
 
     return {
         "correctness": config.correctness_weight if correct else 0.0,
@@ -304,6 +316,19 @@ def _make_reward_fn(cfg: RewardConfig, tokenizer: Any = None, include_length: bo
         components = []
         totals = []
         for i, completion in enumerate(completions):
+            text = _completion_text(completion)
+
+            global _DEBUG_PRINTS
+            if _DEBUG_PRINTS < 5:
+                print("\n" + "=" * 80)
+                print(f"Completion #{_DEBUG_PRINTS + 1}")
+                print(text)
+                print("=" * 80)
+                parsed = parse_model_output(text)
+                print("has_think:", parsed.has_think)
+                print("has_answer:", parsed.has_answer)
+                print("well_formed:", parsed.is_well_formed)
+                _DEBUG_PRINTS += 1
             ground_truth = answer_values[i] if answer_values[i] is not None else target_values[i]
             if ground_truth is None:
                 raise ValueError("Reward function requires dataset column 'answer' or 'target'")

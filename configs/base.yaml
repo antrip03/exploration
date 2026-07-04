@@ -49,7 +49,7 @@ training:
   temperature: 0.9
   top_p: 0.95
   save_steps: 100
-  eval_steps: 100
+  eval_steps: 500
   logging_steps: 10
   fp16: false
   bf16: true
@@ -68,7 +68,7 @@ reward:
 
 # ── Generation ─────────────────────────────────────────────
 generation:
-  max_new_tokens: 512
+  max_new_tokens: 128
   do_sample: true
   temperature: 0.9
   top_p: 0.95
@@ -85,7 +85,7 @@ dataset:
   split_eval: null
   eval_holdout_seed: 42
   max_train_samples: null
-  max_eval_samples: 200
+  max_eval_samples: 50
   preprocessing_num_workers: 4
   countdown_min_digits: 1
   countdown_max_digits: 4

@@ -50,14 +50,7 @@ Try 4 * 5 = 20, then 20 - 3 = 17.
 
 COUNTDOWN_TEMPLATE: str = """\
 Using the numbers {numbers}, create an arithmetic expression that equals {target}.
-Use each number exactly once and only the operations +, -, *, /.
-Respond using ONLY the required format:
-
-<think>
-...
-</think>
-<answer>...</answer>
-"""
+Use each number exactly once and only the operations +, -, *, /."""
 
 # Regex patterns for parsing model outputs
 _THINK_PATTERN: re.Pattern[str] = re.compile(
