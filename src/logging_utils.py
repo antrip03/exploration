@@ -68,8 +68,10 @@ class ExperimentLogger:
             project=self.log_cfg.wandb_project,
             entity=self.log_cfg.wandb_entity or os.environ.get("WANDB_ENTITY"),
             name=self.cfg.condition_id,
+            id=self.cfg.condition_id,      # fixed ID = condition name
             config=self.cfg.to_dict(),
             tags=self.cfg.tags or None,
+            resume="allow",                # resumes existing run if ID matches
             reinit=True,
         )
 

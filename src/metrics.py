@@ -81,7 +81,11 @@ def pass_at_k(
     if len(groups) != len(truths):
         raise ValueError("Number of completion groups must match ground truths")
     if any(k > len(group) for group in groups):
-        raise ValueError("k exceeds the number of completions for at least one problem")
+        logger.warning(
+            "k=%d exceeds completions for some problems — truncating to available samples",
+            k,
+        )
+    groups = [group[:k] for group in groups]
     numbers = numbers_per_problem or [None] * len(groups)
     solved = [
         any(_correct(completion, str(target), nums) for completion in group[:k])

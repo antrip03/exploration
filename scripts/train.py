@@ -93,6 +93,30 @@ def main() -> None:
     exp_logger.finish()
     logger.info("Training complete. Outputs saved to %s", cfg.training.output_dir)
 
+    # Push checkpoint to HuggingFace Hub if credentials available
+    import os
+    hf_token = os.environ.get("HF_TOKEN")
+    hf_username = os.environ.get("HF_USERNAME")
+    if hf_token and hf_username:
+        try:
+            from huggingface_hub import HfApi
+            api = HfApi()
+            checkpoint_path = Path(cfg.training.output_dir) / "checkpoint-final"
+            repo_id = f"{hf_username}/grpo-{cfg.condition_id}"
+            logger.info("Pushing checkpoint to HuggingFace Hub: %s", repo_id)
+            api.create_repo(repo_id=repo_id, repo_type="model", exist_ok=True, token=hf_token)
+            api.upload_folder(
+                folder_path=str(checkpoint_path),
+                repo_id=repo_id,
+                repo_type="model",
+                token=hf_token,
+            )
+            logger.info("Checkpoint pushed successfully to %s", repo_id)
+        except Exception as exc:
+            logger.warning("HuggingFace Hub push failed (non-fatal): %s", exc)
+    else:
+        logger.info("HF_TOKEN or HF_USERNAME not set — skipping Hub push")
+
 
 if __name__ == "__main__":
     main()
