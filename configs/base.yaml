@@ -50,7 +50,7 @@ training:
   top_p: 0.95
   save_steps: 100
   eval_steps: 500
-  logging_steps: 10
+  logging_steps: 1
   fp16: false
   bf16: true
   beta: 0.0

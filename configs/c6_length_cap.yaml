@@ -14,7 +14,7 @@ reward:
   length_bonus_max: 0.5
   format_bonus: 0.15
   hard_length_cap: true
-  hard_length_cap_tokens: 256  # provisional pilot placeholder; recalibrate after C2
+  hard_length_cap_tokens: 70  # provisional pilot placeholder; recalibrate after C2
 
 training:
   output_dir: "outputs/c6_length_cap"

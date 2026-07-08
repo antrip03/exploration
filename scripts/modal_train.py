@@ -21,7 +21,7 @@ image = (
         "wandb",
         "bitsandbytes",
         "sentencepiece",
-        "huggingface_hub",
+        "huggingface_hub[cli]",
         "ninja",
         "packaging",
         "pyyaml",
@@ -39,7 +39,7 @@ image = (
 
 @app.function(
     gpu="A10G",
-    timeout=60 * 60 * 3,          # 3 hours max
+    timeout=60 * 60 * 3,
     image=image,
     volumes={"/root/.cache/huggingface": model_cache},
     secrets=[
@@ -59,6 +59,48 @@ def train(config_name: str, overrides: list[str] | None = None):
     start = time.time()
     subprocess.run(cmd, cwd=workdir, check=True)
     print(f"Total wall time: {time.time() - start:.1f}s")
+
+
+@app.function(
+    gpu="A10G",
+    timeout=60 * 60,
+    image=image,
+    volumes={"/root/.cache/huggingface": model_cache},
+    secrets=[
+        modal.Secret.from_name("huggingface"),
+        modal.Secret.from_name("wandb"),
+    ],
+)
+def evaluate(config_name: str, k: int = 8, seed: int = 42):
+    import os
+    workdir = Path("/root/project")
+
+    hf_username = os.environ.get("HF_USERNAME", "antrip03")
+    repo_id = f"{hf_username}/grpo-{config_name}-s{seed}"
+    checkpoint_dir = workdir / "outputs" / config_name / "checkpoint-final"
+    checkpoint_dir.mkdir(parents=True, exist_ok=True)
+
+    print(f"Downloading checkpoint from {repo_id}...")
+    subprocess.run([
+        "python", "-c",
+        f"""
+from huggingface_hub import snapshot_download
+snapshot_download(
+    repo_id="{repo_id}",
+    repo_type="model",
+    local_dir="{checkpoint_dir}",
+)
+print("Download complete.")
+"""
+    ], cwd=workdir, check=True)
+
+    print(f"Running evaluation for {config_name} with k={k}...")
+    subprocess.run([
+        "python", "scripts/evaluate.py",
+        "--config", f"configs/{config_name}.yaml",
+        "--checkpoint", str(checkpoint_dir),
+        "--k", str(k),
+    ], cwd=workdir, check=True)
 
 
 @app.function(
@@ -98,8 +140,16 @@ def smoke_test():
 def main(
     config_name: str = "c2_hackable",
     max_steps: int = 500,
+    evaluate_only: bool = False,
+    k: int = 8,
+    seed: int = 42,
 ):
-    train.remote(
-        config_name,
-        overrides=[f"training.max_steps={max_steps}"],
-    )
+    if evaluate_only:
+        evaluate.remote(config_name, k=k, seed=seed)
+    else:
+        overrides = [
+            f"training.max_steps={max_steps}",
+            f"training.seed={seed}",
+            f"training.output_dir=outputs/{config_name}-s{seed}",
+        ]
+        train.remote(config_name, overrides=overrides)

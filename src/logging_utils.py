@@ -64,16 +64,27 @@ class ExperimentLogger:
 
         if os.environ.get("KAGGLE_KERNEL_RUN_TYPE"):
             os.environ.setdefault("WANDB_MODE", "offline")
-        self._wandb_run = wandb.init(
-            project=self.log_cfg.wandb_project,
-            entity=self.log_cfg.wandb_entity or os.environ.get("WANDB_ENTITY"),
-            name=self.cfg.condition_id,
-            id=self.cfg.condition_id,      # fixed ID = condition name
-            config=self.cfg.to_dict(),
-            tags=self.cfg.tags or None,
-            resume="allow",                # resumes existing run if ID matches
-            reinit=True,
-        )
+
+        seed = getattr(self.cfg.training, 'seed', 123)
+        version = getattr(self.log_cfg, 'run_version', 'v3')
+        run_id = f"{self.cfg.condition_id}-s{seed}-{version}"
+
+        try:
+            self._wandb_run = wandb.init(
+                project=self.log_cfg.wandb_project,
+                entity=self.log_cfg.wandb_entity or os.environ.get("WANDB_ENTITY"),
+                name=run_id,
+                id=run_id,
+                config=self.cfg.to_dict(),
+                tags=self.cfg.tags or None,
+                resume="allow",
+                reinit="finish_previous",
+                settings=wandb.Settings(init_timeout=180),
+            )
+            logger.info("W&B run initialized: %s", run_id)
+        except Exception as exc:
+            logger.warning("W&B initialization failed (%s); continuing without W&B", exc)
+            self._wandb_run = None
 
     def _setup_tensorboard(self) -> None:
         try:

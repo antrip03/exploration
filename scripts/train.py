@@ -102,7 +102,8 @@ def main() -> None:
             from huggingface_hub import HfApi
             api = HfApi()
             checkpoint_path = Path(cfg.training.output_dir) / "checkpoint-final"
-            repo_id = f"{hf_username}/grpo-{cfg.condition_id}"
+            seed = cfg.training.seed
+            repo_id = f"{hf_username}/grpo-{cfg.condition_id}-s{seed}"
             logger.info("Pushing checkpoint to HuggingFace Hub: %s", repo_id)
             api.create_repo(repo_id=repo_id, repo_type="model", exist_ok=True, token=hf_token)
             api.upload_folder(
