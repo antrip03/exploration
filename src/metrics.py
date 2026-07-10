@@ -3,13 +3,33 @@
 from __future__ import annotations
 
 import ast
+import logging
 import math
 from dataclasses import dataclass, field
 from statistics import mean, median, pstdev
 from typing import Any, Iterable, Optional
 
+logger = logging.getLogger(__name__)
+
 from src.prompts import extract_answer, extract_think
 from src.reward_functions import count_tokens, expression_is_correct, is_degenerate_solution
+
+# Lazy-loaded SentenceTransformer instance
+_SENTENCE_TRANSFORMER = None
+_SENTENCE_TRANSFORMER_MODEL = "all-MiniLM-L6-v2"
+
+
+def _get_sentence_transformer():
+    """Lazy-load the SentenceTransformer model; return None if not installed."""
+    global _SENTENCE_TRANSFORMER
+    if _SENTENCE_TRANSFORMER is None:
+        try:
+            from sentence_transformers import SentenceTransformer  # type: ignore[import-untyped]
+
+            _SENTENCE_TRANSFORMER = SentenceTransformer(_SENTENCE_TRANSFORMER_MODEL)
+        except ImportError:
+            _SENTENCE_TRANSFORMER = False  # Sentinel: don't retry
+    return _SENTENCE_TRANSFORMER if _SENTENCE_TRANSFORMER is not False else None
 
 
 @dataclass
@@ -22,6 +42,7 @@ class MetricsResult:
     reasoning_length_std: float = 0.0
     reasoning_length_max: float = 0.0
     exploration_gap: float = 0.0
+    embedding_variance: float = 0.0
     extra: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -33,7 +54,7 @@ class MetricsResult:
             "reasoning_length/std": self.reasoning_length_std,
             "reasoning_length/max": self.reasoning_length_max,
             "exploration_gap": self.exploration_gap,
-            "embedding_variance": 0.0,
+            "embedding_variance": self.embedding_variance,
             **self.extra,
         }
 
@@ -185,9 +206,66 @@ def think_length_stats(completions: list[str], tokenizer: Any = None) -> dict[st
 reasoning_length_statistics = think_length_stats
 
 
-def embedding_variance(*_: Any, **__: Any) -> float:
-    """Deprecated metric retained as an import-compatible no-op."""
-    return 0.0
+def embedding_variance(
+    completions_per_problem: list[list[str]],
+) -> float:
+    """Compute mean pairwise cosine distance across <think> block embeddings.
+
+    For each problem, extracts the <think> blocks from all ``k`` sampled completions,
+    encodes them into 384-dim embeddings using SentenceTransformer (all-MiniLM-L6-v2),
+    and computes the mean pairwise cosine distance (1 - cosine similarity).
+
+    Returns
+    -------
+    float
+        Average across all problems. 0.0 = all identical reasoning,
+        1.0 = maximally diverse. Falls back to 0.0 if sentence-transformers is not installed.
+    """
+    model = _get_sentence_transformer()
+    if model is None:
+        return 0.0
+
+    if not completions_per_problem:
+        return 0.0
+
+    problem_distances: list[float] = []
+    for group in completions_per_problem:
+        # Extract <think> blocks from all completions in this problem
+        think_blocks = [extract_think(c) for c in group]
+        # Filter out None / empty think blocks
+        think_blocks = [t for t in think_blocks if t and t.strip()]
+        if len(think_blocks) < 2:
+            problem_distances.append(0.0)
+            continue
+
+        # Encode all think blocks into embeddings
+        embeddings = model.encode(think_blocks, show_progress_bar=False)  # (N, 384)
+        n = embeddings.shape[0]
+
+        # Compute mean pairwise cosine distance (1 - cosine similarity)
+        # Normalise embeddings to unit length for efficient dot-product
+        import numpy as np  # type: ignore[import-untyped]
+
+        norms = np.linalg.norm(embeddings, axis=1, keepdims=True)
+        embeddings_normed = embeddings / np.maximum(norms, 1e-12)
+
+        # Pairwise cosine similarities via dot product
+        cos_sim = embeddings_normed @ embeddings_normed.T  # (N, N)
+
+        # Mask out diagonal (self-similarity)
+        pair_count = n * (n - 1)
+        if pair_count == 0:
+            problem_distances.append(0.0)
+            continue
+
+        total_cos_sim = np.sum(cos_sim) - n  # subtract diagonal of 1.0s
+        mean_cos_sim = total_cos_sim / pair_count
+        mean_cos_dist = 1.0 - mean_cos_sim
+        problem_distances.append(float(mean_cos_dist))
+
+    if not problem_distances:
+        return 0.0
+    return float(mean(problem_distances))
 
 
 def exploration_gap(
@@ -205,13 +283,12 @@ def compute_all_metrics(
     completions_per_problem: list[list[str]],
     ground_truths: list[str],
     k: int = 8,
-    compute_embeddings: bool = False,
+    compute_embeddings: bool = True,
     greedy_completions: Optional[list[str]] = None,
     numbers_per_problem: Optional[list[list[int]]] = None,
     tokenizer: Any = None,
 ) -> MetricsResult:
     """Compute aggregate metrics from sampled and separately greedy outputs."""
-    del compute_embeddings
     greedy = greedy_completions or [group[0] if group else "" for group in completions_per_problem]
     p1 = pass_at_1(greedy, ground_truths, numbers_per_problem)
     pk = pass_at_k(completions_per_problem, ground_truths, k, numbers_per_problem)
@@ -226,6 +303,9 @@ def compute_all_metrics(
     unique = unique_solution_count(completions_per_problem, masks)
     flat = [completion for group in completions_per_problem for completion in group]
     lengths = think_length_stats(flat, tokenizer)
+
+    emb_var = embedding_variance(completions_per_problem) if compute_embeddings else 0.0
+
     return MetricsResult(
         pass_at_1=p1,
         pass_at_k=pk,
@@ -235,6 +315,7 @@ def compute_all_metrics(
         reasoning_length_std=lengths["std"],
         reasoning_length_max=lengths["max"],
         exploration_gap=exploration_gap(p1, pk),
+        embedding_variance=emb_var,
         extra={
             "reasoning_length/min": lengths["min"],
             "reasoning_length/median": lengths["median"],

@@ -68,7 +68,7 @@ reward:
 
 # ── Generation ─────────────────────────────────────────────
 generation:
-  max_new_tokens: 128
+  max_new_tokens: 256
   do_sample: true
   temperature: 0.9
   top_p: 0.95
