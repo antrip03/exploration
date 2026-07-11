@@ -66,7 +66,7 @@ class ExperimentLogger:
             os.environ.setdefault("WANDB_MODE", "offline")
 
         seed = getattr(self.cfg.training, 'seed', 123)
-        version = getattr(self.log_cfg, 'run_version', 'v6')
+        version = getattr(self.log_cfg, 'run_version', 'v10')
         run_id = f"{self.cfg.condition_id}-s{seed}-{version}"
 
         try:

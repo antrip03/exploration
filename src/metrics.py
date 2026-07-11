@@ -209,9 +209,9 @@ reasoning_length_statistics = think_length_stats
 def embedding_variance(
     completions_per_problem: list[list[str]],
 ) -> float:
-    """Compute mean pairwise cosine distance across <think> block embeddings.
+    """Compute mean pairwise cosine distance across  thinking block embeddings.
 
-    For each problem, extracts the <think> blocks from all ``k`` sampled completions,
+    For each problem, extracts the  thinking blocks from all ``k`` sampled completions,
     encodes them into 384-dim embeddings using SentenceTransformer (all-MiniLM-L6-v2),
     and computes the mean pairwise cosine distance (1 - cosine similarity).
 
@@ -223,18 +223,24 @@ def embedding_variance(
     """
     model = _get_sentence_transformer()
     if model is None:
+        logger.warning("embedding_variance: sentence-transformers not available, returning 0.0")
         return 0.0
 
     if not completions_per_problem:
+        logger.warning("embedding_variance: empty completions_per_problem, returning 0.0")
         return 0.0
 
     problem_distances: list[float] = []
-    for group in completions_per_problem:
-        # Extract <think> blocks from all completions in this problem
+    for prob_idx, group in enumerate(completions_per_problem):
+        # Extract  thinking blocks from all completions in this problem
         think_blocks = [extract_think(c) for c in group]
         # Filter out None / empty think blocks
         think_blocks = [t for t in think_blocks if t and t.strip()]
         if len(think_blocks) < 2:
+            logger.debug(
+                "embedding_variance: problem %d has %d/%d valid think blocks (need >=2), appending 0.0",
+                prob_idx, len(think_blocks), len(group),
+            )
             problem_distances.append(0.0)
             continue
 
@@ -264,8 +270,12 @@ def embedding_variance(
         problem_distances.append(float(mean_cos_dist))
 
     if not problem_distances:
+        logger.warning("embedding_variance: no problem distances computed, returning 0.0")
         return 0.0
-    return float(mean(problem_distances))
+
+    result = float(mean(problem_distances))
+    logger.info("embedding_variance: computed over %d problems, result=%.4f", len(problem_distances), result)
+    return result
 
 
 def exploration_gap(

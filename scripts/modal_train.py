@@ -26,6 +26,8 @@ image = (
         "packaging",
         "pyyaml",
         "pydantic>=2",
+        "sentence-transformers>=3.0.0",
+        "numpy>=1.26.0",
     ])
     .run_commands(
         "pip install "
@@ -62,7 +64,7 @@ def train(config_name: str, overrides: list[str] | None = None):
 
 
 @app.function(
-    gpu="A10G",
+    gpu="A100",
     timeout=60 * 60,
     image=image,
     volumes={"/root/.cache/huggingface": model_cache},
@@ -101,6 +103,40 @@ print("Download complete.")
         "--checkpoint", str(checkpoint_dir),
         "--k", str(k),
     ], cwd=workdir, check=True)
+
+    return {"config_name": config_name, "seed": seed, "k": k, "repo_id": repo_id}
+
+
+@app.function(
+    gpu="A100",
+    timeout=60 * 60,
+    image=image,
+    volumes={"/root/.cache/huggingface": model_cache},
+    secrets=[
+        modal.Secret.from_name("huggingface"),
+        modal.Secret.from_name("wandb"),
+    ],
+)
+def evaluate_batch(config_names: list[str], k: int = 8, seeds: list[int] | None = None):
+    """Evaluate multiple configs and seeds. Runs each in parallel on separate A100 GPUs."""
+    if seeds is None:
+        seeds = [42, 123]
+    # Build list of (config_name, seed) pairs
+    jobs = [(cn, sd) for cn in config_names for sd in seeds]
+    print(f"Launching {len(jobs)} evaluations in parallel on A100 GPUs...")
+    for cn, sd in jobs:
+        print(f"  {cn:25s} seed={sd}")
+    # Launch all evaluations in parallel via spawn
+    futures = [evaluate.spawn(config_name=cn, k=k, seed=sd) for cn, sd in jobs]
+    # Collect results
+    outputs = [f.get() for f in futures]
+    print("\n" + "=" * 70)
+    print("BATCH EVALUATION COMPLETE")
+    print("=" * 70)
+    for o in outputs:
+        print(f"  {o['config_name']:25s} (seed={o['seed']}) -> {o['repo_id']}")
+    print("=" * 70)
+    return outputs
 
 
 @app.function(

@@ -263,6 +263,7 @@ class GRPOExperimentTrainer:
         """Load a saved LoRA adapter for inference."""
         from peft import PeftModel
         from transformers import AutoModelForCausalLM, AutoTokenizer
+        import torch
 
         checkpoint = Path(path)
         if not checkpoint.exists():
@@ -272,17 +273,19 @@ class GRPOExperimentTrainer:
             self.cfg.model.name,
             torch_dtype=self._torch_dtype(),
             trust_remote_code=self.cfg.model.trust_remote_code,
-            device_map="auto",
+            device_map=None,
             low_cpu_mem_usage=True,
         )
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        base.to(device)
         if (checkpoint / "adapter_config.json").exists():
             self.model = PeftModel.from_pretrained(base, checkpoint)
         else:
             self.model = AutoModelForCausalLM.from_pretrained(
                 checkpoint,
                 torch_dtype=self._torch_dtype(),
-                device_map="auto",
-            )
+                device_map=None,
+            ).to(device)
         self.model.eval()
 
     @property

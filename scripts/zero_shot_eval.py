@@ -86,9 +86,15 @@ def main() -> None:
         tokenizer=trainer.tokenizer,
     )
     data = metrics.to_dict()
-    print(f"pass@1: {data['pass@1']:.4f}")
-    print(f"pass@{args.k}: {data[f'pass@{args.k}']:.4f}")
-    print(f"exploration_gap: {data['exploration_gap']:.4f}")
+    print("\n" + "=" * 60)
+    print("Zero-shot Evaluation Results")
+    print("=" * 60)
+    for key, value in data.items():
+        if isinstance(value, float):
+            print(f"  {key:40s} {value:.4f}")
+        else:
+            print(f"  {key:40s} {value}")
+    print("=" * 60)
     if data["pass@1"] > 0.65:
         print("Recommendation: switch to a harder task or a smaller model.")
     else:

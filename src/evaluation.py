@@ -43,6 +43,16 @@ class EvaluationPipeline:
         from src.dataset import format_prompt, load_countdown_dataset
         from src.trainer import GRPOExperimentTrainer
 
+        eval_seed = getattr(self.cfg.dataset, 'eval_holdout_seed', 42)
+        import random
+        import numpy as np
+        import torch
+        random.seed(eval_seed)
+        np.random.seed(eval_seed)
+        torch.manual_seed(eval_seed)
+        if torch.cuda.is_available():
+            torch.cuda.manual_seed_all(eval_seed)
+
         if eval_dataset is None:
             _, eval_dataset = load_countdown_dataset(self.cfg.dataset)
 
@@ -101,6 +111,18 @@ class EvaluationPipeline:
         )
         destination = output_dir or str(Path(self.cfg.training.output_dir) / "eval")
         self.save_results(result, destination)
+        # Print all metrics to stdout
+        if result.metrics is not None:
+            data = result.metrics.to_dict()
+            print("\n" + "=" * 60)
+            print(f"Evaluation Results — {self.cfg.condition_id}")
+            print("=" * 60)
+            for key, value in data.items():
+                if isinstance(value, float):
+                    print(f"  {key:40s} {value:.4f}")
+                else:
+                    print(f"  {key:40s} {value}")
+            print("=" * 60)
         return result
 
     def generate_completions(
