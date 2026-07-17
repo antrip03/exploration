@@ -1,0 +1,28 @@
+# =============================================================
+# game24_c1_baseline.yaml  —  Game of 24, C1: Baseline reward
+# =============================================================
+# Inherits all shared settings from the Countdown base config.
+# Only overrides dataset and condition-specific fields.
+defaults:
+  - ../../configs/base
+
+experiment:
+  condition_id: "game24_c1_baseline"
+  description: "Game of 24: baseline reward (correctness + format), no hacking signals"
+  tags: ["game24", "baseline", "validation"]
+
+dataset:
+  name: "game24"
+  max_eval_samples: 200
+
+reward:
+  type: "baseline"
+  length_bonus_max: 0.0
+  format_bonus: 0.15
+
+training:
+  max_steps: 500
+  eval_steps: 500
+  seed: 42
+  beta: 0.0
+  output_dir: "outputs/game24_c1_baseline-s42"

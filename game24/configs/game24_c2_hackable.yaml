@@ -1,0 +1,29 @@
+# =============================================================
+# game24_c2_hackable.yaml  —  Game of 24, C2: Hackable reward
+# =============================================================
+# Inherits all shared settings from the Countdown base config.
+# Only overrides dataset and condition-specific fields.
+defaults:
+  - ../../configs/base
+
+experiment:
+  condition_id: "game24_c2_hackable"
+  description: "Game of 24: hackable reward (correctness + length bonus + format), no guardrail"
+  tags: ["game24", "hackable", "validation"]
+
+dataset:
+  name: "game24"
+  max_eval_samples: 200
+
+reward:
+  type: "hackable"
+  length_bonus_max: 0.5
+  length_bonus_ceiling: 100
+  format_bonus: 0.15
+
+training:
+  max_steps: 500
+  eval_steps: 500
+  seed: 42
+  beta: 0.0
+  output_dir: "outputs/game24_c2_hackable-s42"
