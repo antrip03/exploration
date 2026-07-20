@@ -1,0 +1,20 @@
+# =============================================================
+# c7_kl_new.yaml  —  Condition 4: Hackable reward + KL β=0.05
+# =============================================================
+defaults:
+  - base
+
+experiment:
+  condition_id: "c7_kl_new"
+  description: "Hackable reward + KL regularization, beta=0.03 (moderate)"
+  tags: ["hackable", "kl-regularization", "beta-sweep"]
+
+reward:
+  type: "guardrailed"
+  length_bonus_max: 0.5
+  format_bonus: 0.15
+
+training:
+  output_dir: "outputs/c7_kl_new"
+  beta: 0.03
+  seed: 42

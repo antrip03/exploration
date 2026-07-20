@@ -76,11 +76,16 @@ def train(config_name: str, overrides: list[str] | None = None):
     for pkg in ("flash_attn", "triton", "xformers"):
         try:
             m = __import__(pkg)
-            print(pkg, m.__version__)
+            print(f"{pkg}: {m.__version__}")
         except Exception as e:
-            print(pkg, e)
+            print(f"{pkg}: {e}")
+
+    print("=" * 80)
+    print("STARTING GPU MONITOR")
+    print("=" * 80)
 
     workdir = Path("/root/project")
+
     cmd = [
         "python",
         "scripts/train.py",
@@ -90,9 +95,42 @@ def train(config_name: str, overrides: list[str] | None = None):
     if overrides:
         cmd.extend(overrides)
 
-    start = time.time()
-    subprocess.run(cmd, cwd=workdir, check=True)
-    print(f"Total wall time: {time.time() - start:.1f}s")
+    # Start GPU monitor
+    monitor_log = "/tmp/gpu_dmon.log"
+    monitor = subprocess.Popen(
+        ["nvidia-smi", "dmon", "-s", "pucm"],
+        stdout=open(monitor_log, "w"),
+        stderr=subprocess.STDOUT,
+    )
+
+    # Launch training
+    proc = subprocess.Popen(cmd, cwd=workdir)
+
+    print("Training for 60 seconds...")
+
+    try:
+        proc.wait(timeout=60)
+        print("Training finished before 60 seconds.")
+    except subprocess.TimeoutExpired:
+        print("Stopping training after 60 seconds...")
+        proc.terminate()
+
+        try:
+            proc.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait()
+
+    # Stop GPU monitor
+    monitor.terminate()
+    monitor.wait()
+
+    print("\n" + "=" * 80)
+    print("GPU DMON LOG")
+    print("=" * 80)
+
+    with open(monitor_log, "r") as f:
+        print(f.read())
 
 
 @app.function(

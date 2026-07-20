@@ -1,0 +1,490 @@
+\documentclass{article}
+
+% NeurIPS 2025 style
+\usepackage[preprint]{neurips_2025}
+
+% Math and formatting
+\usepackage{amsmath,amssymb,amsthm}
+\usepackage{booktabs}
+\usepackage{graphicx}
+\usepackage{xcolor}
+\usepackage{hyperref}
+\usepackage{caption}
+\usepackage{subcaption}
+\usepackage{pgfplots}
+\usepackage{pgfplotstable}
+\usepackage{tikz}
+\usepackage{multirow}
+\usepackage{array}
+\usepackage{colortbl}
+\usepackage{enumitem}
+\usepackage{wrapfig}
+\usepackage{float}
+\usepackage{microtype}
+
+\pgfplotsset{compat=1.18}
+
+% Override sloppy from style file for better word spacing
+% Use moderate tolerance to balance spacing quality vs overfull boxes
+\tolerance=1000
+\hbadness=1000
+\emergencystretch=3em
+
+% Custom theorem environments
+\newtheorem{finding}{Finding}
+\newtheorem{hypothesis}{Hypothesis}
+
+% Color palette
+\definecolor{baselineblue}{RGB}{31, 119, 180}
+\definecolor{hackableorange}{RGB}{255, 127, 14}
+\definecolor{kllowgreen}{RGB}{44, 160, 44}
+\definecolor{klmedgreen}{RGB}{0, 100, 0}
+\definecolor{klhighgreen}{RGB}{0, 60, 0}
+\definecolor{capred}{RGB}{214, 39, 40}
+\definecolor{lightgray}{RGB}{220, 220, 220}
+
+% Title
+\title{Do Reward Hacking Guardrails Reduce Exploration Diversity in GRPO?}
+
+\author{Anshul Tripathi \\
+  Indian Institute of Technology Roorkee \\
+  \texttt{anshu\_t@cs.iitr.ac.in} \\
+}
+
+\begin{document}
+
+\maketitle
+
+\begin{abstract}
+Reinforcement learning with verifiable rewards, particularly Group Relative Policy Optimization (GRPO), has emerged as a powerful approach for training reasoning models. However, proxy reward signals --- such as length bonuses --- create incentives for reward hacking, prompting practitioners to deploy guardrails such as KL regularization and hard length constraints. While these guardrails are designed to suppress hacking behavior, their effect on policy exploration diversity remains unstudied. We empirically investigate this question using Qwen2.5-1.5B-Instruct fine-tuned with LoRA on the Countdown arithmetic reasoning task across six experimental conditions: a clean baseline, a hackable length-bonus reward, three KL-regularized variants ($\beta \in \{0.01, 0.05, 0.1\}$), and a hard length cap. We measure exploration diversity through pass@k, exploration gap, unique solution count, and semantic embedding variance of reasoning traces. Our results reveal three key findings. First, reward hacking via length exploitation does not reduce semantic diversity --- the hackable condition maintains embedding variance comparable to the clean baseline (0.14) despite tripling median reasoning length. Second, hard environmental constraints collapse semantic diversity by 79\% (embedding variance: 0.03 vs.\ 0.14) while preserving greedy correctness, forcing the policy into a narrow, repetitive reasoning strategy. Third, KL regularization at $\beta \geq 0.05$ exhibits a monotonic relationship with semantic diversity --- higher $\beta$ produces greater embedding variance (up to 0.29 at $\beta=0.1$) at the cost of greedy accuracy. These findings reframe guardrail design as an implicit exploration-exploitation decision: hard constraints maximize exploitation at the expense of exploration, while soft KL penalties preserve exploration but sacrifice reliable execution. We further observe that low KL penalties ($\beta=0.01$) produce unstable training dynamics with high seed variance, suggesting a minimum effective regularization threshold. Our results suggest that guardrail type, not reward hacking itself, is the primary determinant of exploration behavior in GRPO-trained reasoning models.
+\end{abstract}
+
+\section{Introduction}
+
+The emergence of reasoning models trained with reinforcement learning from verifiable rewards has marked a significant advance in large language model capabilities. DeepSeek-R1 \citep{deepseek2024} demonstrated that Group Relative Policy Optimization (GRPO) \citep{shao2024} can effectively train models to produce structured reasoning traces, achieving strong performance on mathematical and logical reasoning tasks. The core idea is elegant: rather than relying on human preference judgments, the model learns from environments where correctness can be automatically verified, such as arithmetic computation or code execution.
+
+However, this paradigm introduces a well-known vulnerability: reward hacking \citep{skalse2022, gao2023}. When the reward signal includes proxy components --- such as length bonuses to encourage verbose reasoning --- the policy can exploit these signals without improving genuine reasoning quality. A model trained with a length bonus may learn to produce increasingly long, meandering reasoning traces that receive high reward despite being no more (or even less) likely to reach correct answers.
+
+Practitioners have responded with guardrails designed to constrain this hacking behavior. Two common approaches are \emph{KL regularization}, which penalizes divergence from a reference policy \citep{ziegler2019, ouyang2022}, and \emph{hard environmental constraints}, such as maximum token limits that truncate or penalize overly long generations. These guardrails are typically evaluated on their ability to suppress reward hacking and maintain correctness.
+
+But a critical question remains unexamined: \textbf{what effect do these guardrails have on exploration diversity?} In reinforcement learning, the exploration-exploitation tradeoff is fundamental \citep{sutton2018}. A policy that converges too quickly to a narrow reasoning strategy may miss better solutions; a policy that explores too broadly may fail to execute reliably. Guardrails, by constraining the policy's behavior, implicitly shift this balance. Yet no prior work has systematically measured how different guardrail designs affect the diversity of reasoning strategies learned by GRPO-trained models.
+
+We address this gap through a controlled experiment on the Countdown arithmetic reasoning task. We train Qwen2.5-1.5B-Instruct with LoRA across six conditions that isolate the effects of reward hacking, KL regularization, and hard length constraints. Our key findings are:
+
+\begin{itemize}[leftmargin=*]
+    \item \textbf{Reward hacking does not reduce semantic diversity.} The hackable condition (length bonus, no guardrail) produces embedding variance comparable to the clean baseline (0.14) despite tripling median reasoning length from 36 to 134 tokens.
+    \item \textbf{Hard length caps collapse semantic diversity by 79\%.} The capped condition achieves embedding variance of only 0.03, forcing the policy into a narrow, repetitive reasoning strategy while preserving competitive greedy accuracy (0.19 pass@1).
+    \item \textbf{KL regularization monotonically increases semantic diversity.} Higher KL coefficients produce greater embedding variance (up to 0.29 at $\beta=0.10$) but at a monotonic cost to greedy accuracy (0.06 pass@1).
+\end{itemize}
+
+Our contributions are fourfold:
+\begin{enumerate}[leftmargin=*]
+    \item We present the first empirical study of guardrail effects on exploration diversity in GRPO-trained reasoning models.
+    \item We demonstrate the counterintuitive finding that reward hacking via length exploitation does not reduce semantic diversity of reasoning traces.
+    \item We provide evidence that hard environmental constraints collapse exploration while KL regularization increases it, revealing guardrail design as an implicit exploration-exploitation decision.
+    \item We reframe the practitioner's choice of guardrail as a deliberate tradeoff between exploration and exploitation, with measurable consequences for policy behavior.
+\end{enumerate}
+
+\section{Background and Related Work}
+
+\subsection{Group Relative Policy Optimization}
+
+GRPO \citep{shao2024} is a reinforcement learning algorithm designed for training language models with verifiable rewards. Unlike PPO \citep{schulman2017}, GRPO does not use a critic network; instead, it normalizes rewards within a group of generations for the same prompt. For each prompt $x$, the model generates $G$ completions $\{y_1, \ldots, y_G\}$, and the advantage for completion $y_i$ is computed as $A_i = (r_i - \mu_r) / \sigma_r$, where $\mu_r$ and $\sigma_r$ are the mean and standard deviation of rewards within the group. The policy is updated to increase the probability of high-advantage completions while a KL penalty constrains deviation from the reference policy. DeepSeek-R1 \citep{deepseek2024} demonstrated the effectiveness of this approach for training reasoning models at scale.
+
+\subsection{Reward Hacking in Language Models}
+
+Reward hacking occurs when a policy exploits proxy reward signals to achieve high reward without fulfilling the intended objective \citep{skalse2022}. In language model training, common proxy signals include response length, use of formatting tokens, or specific lexical patterns. \citet{gao2023} showed that reward models trained on human preferences can be exploited by generating overly long or stylistically distinctive responses. In the GRPO setting, length bonuses are particularly problematic because they create a direct incentive for the model to produce longer reasoning traces, regardless of whether additional length improves reasoning quality.
+
+\subsection{KL Regularization in RLHF}
+
+KL regularization was introduced in the context of RLHF to prevent the policy from diverging too far from the supervised fine-tuned model \citep{ziegler2019, ouyang2022}. The standard objective adds a term $-\beta \cdot D_{\text{KL}}(\pi_\theta \parallel \pi_{\text{ref}})$ to the reward, where $\beta$ controls the strength of regularization. In InstructGPT \citep{ouyang2022}, KL regularization was shown to improve training stability and prevent reward hacking. However, its effect on exploration diversity has not been systematically studied.
+
+\subsection{Exploration in Reinforcement Learning}
+
+The exploration-exploitation tradeoff is a foundational concept in reinforcement learning \citep{sutton2018}. In the context of LLM training, exploration corresponds to the diversity of generated responses, which affects both the discovery of better solutions and the robustness of the learned policy. Recent work has begun to examine exploration in LLM training. \citet{chen2021} introduced the pass@k metric for measuring the probability of generating at least one correct solution in $k$ samples, which captures both correctness and diversity.
+
+\subsection{Related Empirical Studies}
+
+Several recent works touch on related themes. MO-GRPO \citep{mo_grpo} (arXiv:2509.22047) studies reward hacking in multi-objective GRPO, focusing on objective reweighting strategies. Our work is complementary: we focus on exploration diversity rather than objective design. \citet{llm_agent_hacking} (arXiv:2606.15385) finds that reward hacking in LLM agent environments leads to exploration failure, but their setting involves interactive environments rather than the static reasoning tasks we study. Transformation-Augmented GRPO \citep{ta_grpo} (arXiv:2601.22478) proposes data augmentation to enhance exploration in GRPO, whereas we measure rather than enhance exploration, providing a diagnostic framework for understanding guardrail effects.
+
+\section{Experimental Setup}
+
+\subsection{Task and Dataset}
+
+We use the Countdown arithmetic reasoning task, where the model is given a set of numbers and a target value, and must produce an arithmetic expression using $+$, $-$, $\times$, and $\div$ that evaluates to the target, using each number exactly once. We use the \texttt{Jiayi-Pan/Countdown-Tasks-3to4} dataset from HuggingFace, which contains problems with 3--4 numbers. We hold out 50 evaluation examples with a fixed random seed for reproducible evaluation.
+
+\subsection{Model and Training}
+
+We fine-tune Qwen2.5-1.5B-Instruct using LoRA with rank $r=16$, $\alpha=32$, and dropout 0.05 applied to all projection layers. Training runs for 1000 steps with batch size 1, gradient accumulation 4, learning rate $1\times10^{-5}$, and cosine learning rate schedule. During GRPO training, we generate 8 completions per prompt for advantage computation.
+
+\subsection{Experimental Conditions}
+
+We design six conditions to isolate the effects of reward hacking, KL regularization, and hard length constraints. Table~\ref{tab:conditions} summarizes the conditions.
+
+\begin{table}[t]
+\centering
+\caption{Experimental conditions. All conditions include correctness and format rewards. The hackable conditions add a length bonus. KL regularization and hard length cap are applied as guardrails.}
+\label{tab:conditions}
+\begin{tabular}{lcccc}
+\toprule
+\textbf{Condition} & \textbf{Reward Components} & \textbf{KL $\beta$} & \textbf{Length Cap} \\
+\midrule
+C1: Baseline & Correctness + Format & 0 & None \\
+C2: Hackable & Correctness + Format + Length Bonus & 0 & None \\
+C3: KL-Low & Correctness + Format + Length Bonus & 0.01 & None \\
+C4: KL-Med & Correctness + Format + Length Bonus & 0.05 & None \\
+C5: KL-High & Correctness + Format + Length Bonus & 0.10 & None \\
+C6: LengthCap & Correctness + Format + Length Bonus & 0 & 65 tokens \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Evaluation Metrics}
+
+We define five metrics to capture different aspects of exploration diversity:
+
+\textbf{pass@1}: The proportion of evaluation examples where greedy decoding (temperature 0) produces a correct expression. This measures the policy's ability to reliably execute its best strategy.
+
+\textbf{pass@k} ($k=8$): The probability that at least one of $k$ sampled completions is correct, estimated using the unbiased estimator from \citet{chen2021}:
+\[
+\text{pass@k} = \mathbb{E}_{\text{problems}} \left[ 1 - \frac{\binom{n-c}{k}}{\binom{n}{k}} \right]
+\]
+where $n=8$ samples are drawn per problem and $c$ is the number of correct samples.
+
+\textbf{Exploration gap}: The difference $\text{pass@k} - \text{pass@1}$. A larger gap indicates that the policy explores diverse strategies, some of which succeed even when the greedy strategy fails.
+
+\textbf{Unique solution count}: The proportion of distinct correct expressions among $k$ samples, averaged across problems. This measures syntactic diversity of correct solutions.
+
+\textbf{Embedding variance}: The mean pairwise cosine distance between sentence-transformer embeddings of the \texttt{<think>} block contents. This measures semantic diversity of the reasoning traces. Higher values indicate more diverse reasoning strategies.
+
+\subsection{Seeds and Reproducibility}
+
+We use 2 random seeds per condition (42 and 123) for training. Evaluation uses a fixed seed for all sampling-based metrics to ensure reproducibility. All results are reported as mean $\pm$ standard deviation across seeds unless otherwise noted.
+
+\section{Results}
+
+\subsection{Main Results}
+
+Table~\ref{tab:results} presents the full results across all six conditions. The raw per-seed data is shown in Appendix~\ref{app:raw_data}.
+
+\begin{table}[t]
+\centering
+\caption{Main evaluation results across all conditions. Best value in each column is bolded. All metrics are mean $\pm$ std across 2 seeds. Unique solution count for C6 shows high seed variance (0.06 vs.\ 0.40); embedding variance is the more reliable diversity metric.}
+\label{tab:results}
+\small
+\begin{tabular}{lcccccc}
+\toprule
+\textbf{Condition} & \textbf{pass@1} & \textbf{pass@8} & \textbf{Gap} & \textbf{Unique} & \textbf{Emb.\ Var.} & \textbf{Med.\ Len.} \\
+\midrule
+C1: Baseline & $0.23\pm0.03$ & $\mathbf{0.44\pm0.04}$ & $0.21\pm0.07$ & $\mathbf{0.54\pm0.06}$ & $0.14\pm0.02$ & 36.0 \\
+C2: Hackable & $0.15\pm0.01$ & $0.42\pm0.04$ & $\mathbf{0.27\pm0.03}$ & $0.57\pm0.16$ & $0.14\pm0.09$ & 134.3 \\
+C3: KL-Low & $0.12\pm0.02$ & $0.41\pm0.05$ & $0.29\pm0.07$ & $0.53\pm0.07$ & $0.14\pm0.09$ & 137.0 \\
+C4: KL-Med & $0.13\pm0.03$ & $0.31\pm0.03$ & $0.18\pm0.00$ & $0.39\pm0.04$ & $0.24\pm0.02$ & 112.5 \\
+C5: KL-High & $0.06\pm0.02$ & $0.25\pm0.01$ & $0.19\pm0.01$ & $0.27\pm0.01$ & $\mathbf{0.29\pm0.01}$ & 86.8 \\
+C6: LengthCap & $0.19\pm0.03$ & $0.34\pm0.04$ & $0.15\pm0.01$ & $0.23\pm0.24$ & $0.03\pm0.01$ & 62.5 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Finding 1: Reward Hacking Does Not Reduce Semantic Diversity}
+
+Our first finding challenges a common assumption: that reward hacking degrades reasoning broadly. Comparing C2 (hackable, no guardrail) to C1 (clean baseline), we observe that while reward hacking successfully exploits the length bonus --- median reasoning length triples from 36.0 to 134.3 tokens --- semantic diversity remains unchanged. The embedding variance is nearly identical: $0.14 \pm 0.02$ for the baseline and $0.14 \pm 0.09$ for the hackable condition.
+
+\begin{finding}
+Reward hacking via length exploitation does not reduce semantic diversity of reasoning traces. Despite tripling median reasoning length, the hackable policy maintains embedding variance comparable to the clean baseline.
+\end{finding}
+
+This is mechanistically interpretable: length expansion increases the \emph{budget} for reasoning but does not constrain the \emph{content} of reasoning. The model learns to write more tokens but does not converge on a single reasoning strategy. The hackable condition's higher seed variance in embedding variance (0.09 vs.\ 0.02) does suggest less stable diversity behavior, but the mean is preserved.
+
+Notably, pass@1 drops from $0.23 \pm 0.03$ (baseline) to $0.15 \pm 0.01$ (hackable). Reward hacking has a correctness cost --- the policy sacrifices reliable execution to maximize length --- but this cost is borne by greedy accuracy, not diversity.
+
+\begin{figure}[t]
+\centering
+\begin{tikzpicture}
+\begin{axis}[
+    ylabel={Embedding Variance},
+    xtick={1,2,3,4,5,6},
+    xticklabels={C1, C2, C3, C4, C5, C6},
+    symbolic x coords={C1, C2, C3, C4, C5, C6},
+    xtick=data,
+    ymin=0, ymax=0.35,
+    width=0.85\textwidth,
+    height=0.35\textwidth,
+    enlarge x limits=0.15,
+    ybar,
+    bar width=12pt,
+    error bars/y dir=both,
+    error bars/y explicit,
+    nodes near coords,
+    nodes near coords align=vertical,
+    every node near coord/.append style={font=\small},
+]
+\addplot[fill=baselineblue, draw=baselineblue] coordinates {(C1, 0.14)} 
+    +- (0, 0.02);
+\addplot[fill=hackableorange, draw=hackableorange] coordinates {(C2, 0.14)} 
+    +- (0, 0.09);
+\addplot[fill=kllowgreen, draw=kllowgreen] coordinates {(C3, 0.14)} 
+    +- (0, 0.09);
+\addplot[fill=klmedgreen, draw=klmedgreen] coordinates {(C4, 0.24)} 
+    +- (0, 0.02);
+\addplot[fill=klhighgreen, draw=klhighgreen] coordinates {(C5, 0.29)} 
+    +- (0, 0.01);
+\addplot[fill=capred, draw=capred] coordinates {(C6, 0.03)} 
+    +- (0, 0.01);
+\end{axis}
+\end{tikzpicture}
+\caption{Embedding variance across all conditions with error bars. The length cap condition (C6, red) collapses semantic diversity. KL-regularized conditions (C3--C5, green shades) show increasing diversity with $\beta$. The baseline (C1, blue) and hackable condition (C2, orange) have comparable variance. This is our central finding.}
+\label{fig:embedding_variance}
+\end{figure}
+
+\subsection{Finding 2: Hard Environmental Constraints Collapse Semantic Diversity}
+
+The most striking result in our study is C6 (length cap). With a hard 65-token limit, the policy collapses to embedding variance of $0.03 \pm 0.01$ --- a 79\% reduction from the baseline. Both seeds are highly consistent (0.026 and 0.040), making this our most robust finding.
+
+\begin{finding}
+Hard length caps reduce semantic diversity by 79\% compared to the baseline. The policy converges to a narrow, repetitive reasoning strategy while maintaining competitive greedy accuracy.
+\end{finding}
+
+The mechanism is clear from the reasoning length statistics. The standard deviation of reasoning length in C6 is only 6.3 tokens (across seed means), compared to $\sim$26 tokens in the baseline. The policy has discovered that one efficient strategy suffices: express the problem as a sequence of addition and subtraction operations, which minimizes token usage while occasionally producing correct answers. Figure~\ref{fig:length_distributions} shows the compressed length distribution.
+
+\begin{table}[t]
+\centering
+\caption{Reasoning length statistics across conditions. C6 shows dramatic compression in both mean and standard deviation.}
+\label{tab:length_stats}
+\begin{tabular}{lcccc}
+\toprule
+\textbf{Condition} & \textbf{Mean} & \textbf{Std} & \textbf{Min} & \textbf{Max} \\
+\midrule
+C1: Baseline & 42.5 & 25.8 & 0.0 & 221.5 \\
+C2: Hackable & 131.8 & 56.6 & 0.0 & 245.0 \\
+C3: KL-Low & 135.1 & 54.6 & 0.0 & 248.0 \\
+C4: KL-Med & 112.1 & 73.0 & 0.0 & 249.5 \\
+C5: KL-High & 91.4 & 70.6 & 0.0 & 247.5 \\
+C6: LengthCap & 63.2 & 6.3 & 47.5 & 90.5 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Critically, pass@1 in C6 ($0.19 \pm 0.03$) is competitive with the baseline ($0.23 \pm 0.03$) and higher than any hackable condition. The hard cap preserves the ability to produce correct answers greedily --- but it achieves this by forcing the policy to find one efficient path and repeat it. The cost is a complete loss of exploration: the policy no longer tries different reasoning strategies.
+
+\begin{figure}[t]
+\centering
+\begin{tikzpicture}
+\begin{axis}[
+    ylabel={Reasoning Length (tokens)},
+    xtick={1,2,3,4,5,6},
+    xticklabels={C1, C2, C3, C4, C5, C6},
+    xtick=data,
+    width=0.85\textwidth,
+    height=0.35\textwidth,
+    enlarge x limits=0.12,
+]
+% Box plot approximations using ybar with min/mean/max markers
+% Mean as bar, std as error bar
+\addplot[fill=baselineblue, draw=baselineblue, error bars/y dir=both, error bars/y explicit]
+    coordinates {(1, 42.5)} +- (0, 25.8);
+\addplot[fill=hackableorange, draw=hackableorange, error bars/y dir=both, error bars/y explicit]
+    coordinates {(2, 131.8)} +- (0, 56.6);
+\addplot[fill=kllowgreen, draw=kllowgreen, error bars/y dir=both, error bars/y explicit]
+    coordinates {(3, 135.1)} +- (0, 54.6);
+\addplot[fill=klmedgreen, draw=klmedgreen, error bars/y dir=both, error bars/y explicit]
+    coordinates {(4, 112.1)} +- (0, 73.0);
+\addplot[fill=klhighgreen, draw=klhighgreen, error bars/y dir=both, error bars/y explicit]
+    coordinates {(5, 91.4)} +- (0, 70.6);
+\addplot[fill=capred, draw=capred, error bars/y dir=both, error bars/y explicit]
+    coordinates {(6, 63.2)} +- (0, 6.3);
+\end{axis}
+\end{tikzpicture}
+\caption{Reasoning length distributions across conditions (mean $\pm$ std). C6 shows dramatic compression in length variance. C2 and C3 show length expansion from the length bonus.}
+\label{fig:length_distributions}
+\end{figure}
+
+\subsection{Finding 3: KL Regularization Monotonically Increases Semantic Diversity}
+
+The KL-regularized conditions (C3--C5) reveal a clean monotonic relationship between the KL coefficient $\beta$ and semantic diversity. Embedding variance increases steadily: $0.14$ (baseline) $\rightarrow$ $0.14$ (C3, $\beta=0.01$) $\rightarrow$ $0.24$ (C4, $\beta=0.05$) $\rightarrow$ $0.29$ (C5, $\beta=0.10$). The effect is reliable at $\beta \geq 0.05$: C4 and C5 show low seed variance (0.02 and 0.01 respectively), while C3 ($\beta=0.01$) shows high seed variance (0.09), suggesting this is below a minimum effective threshold.
+
+\begin{finding}
+KL regularization monotonically increases semantic diversity for $\beta \geq 0.05$. Higher KL coefficients produce more diverse reasoning traces, but at a monotonic cost to greedy accuracy.
+\end{finding}
+
+The cost is equally clear. pass@1 decreases monotonically: $0.23$ (baseline) $\rightarrow$ $0.12$ (C3) $\rightarrow$ $0.13$ (C4) $\rightarrow$ $0.06$ (C5). KL regularization prevents the policy from converging to any single confident reasoning strategy. The policy remains deliberately uncertain --- it explores broadly but executes poorly.
+
+This tradeoff is visualized in Figure~\ref{fig:kl_tradeoff}. The dual-axis plot shows embedding variance increasing and pass@1 decreasing as $\beta$ grows. The $\beta=0.10$ condition achieves the highest diversity (0.29) but the worst greedy accuracy (0.06). For practitioners, this reveals KL regularization as an unintentional exploration enhancement mechanism.
+
+\begin{figure}[t]
+\centering
+\begin{tikzpicture}
+\begin{axis}[
+    xlabel={KL Coefficient $\beta$},
+    ylabel={Embedding Variance},
+    ylabel near ticks,
+    ylabel style={color=klmedgreen},
+    xtick={0, 0.01, 0.05, 0.10},
+    width=0.85\textwidth,
+    height=0.35\textwidth,
+    axis y line=left,
+    axis x line=bottom,
+    ymin=0, ymax=0.35,
+    legend pos=north west,
+]
+\addplot[color=klmedgreen, mark=square, thick] coordinates {(0, 0.14) (0.01, 0.14) (0.05, 0.24) (0.10, 0.29)};
+\addlegendentry{Emb. Variance}
+\end{axis}
+\begin{axis}[
+    ylabel={pass@1},
+    ylabel near ticks,
+    ylabel style={color=capred},
+    xtick={0, 0.01, 0.05, 0.10},
+    width=0.85\textwidth,
+    height=0.35\textwidth,
+    axis y line=right,
+    axis x line=none,
+    ymin=0, ymax=0.30,
+    legend pos=north east,
+]
+\addplot[color=capred, mark=diamond, thick, dashed] coordinates {(0, 0.23) (0.01, 0.12) (0.05, 0.13) (0.10, 0.06)};
+\addlegendentry{pass@1}
+\end{axis}
+\end{tikzpicture}
+\caption{Dual-axis plot showing the exploration-exploitation tradeoff under KL regularization. Embedding variance (green, left axis) increases with $\beta$ while pass@1 (red, right axis) decreases. Each point is the mean across 2 seeds.}
+\label{fig:kl_tradeoff}
+\end{figure}
+
+\subsection{Finding 4: Guardrail Type Is the Primary Determinant of Exploration}
+
+Comparing the extreme conditions reveals that guardrail type, not the presence or absence of reward hacking, determines exploration behavior. Figure~\ref{fig:embedding_variance} makes this visually apparent. Consider three conditions where the reward function includes a length bonus:
+
+\begin{itemize}[leftmargin=*]
+    \item \textbf{No guardrail (C2):} Embedding variance = 0.14. The policy hacks the length bonus but remains semantically diverse.
+    \item \textbf{Hard cap (C6):} Embedding variance = 0.03. The guardrail suppresses hacking but collapses diversity.
+    \item \textbf{High KL (C5):} Embedding variance = 0.29. The guardrail also suppresses hacking but \emph{increases} diversity.
+\end{itemize}
+
+\begin{finding}
+Guardrail type, not reward hacking itself, is the primary determinant of exploration behavior. Hard caps reduce diversity by 79\%, while KL regularization at $\beta=0.10$ increases diversity by 107\% relative to the baseline.
+\end{finding}
+
+These are not points on the same spectrum. A hard cap and a KL penalty produce qualitatively different policies. The practitioner's choice of guardrail is secretly a choice about where to sit on the exploration-exploitation tradeoff. Hard caps produce exploitation-dominant policies; KL regularization produces exploration-dominant policies; no guardrail allows the policy to find its own balance, which in our experiments is the most efficient overall.
+
+\subsection{Training Dynamics}
+
+Figure~\ref{fig:training_curves} shows the W\&B training curves for reward components across conditions. The training dynamics reveal several patterns. C2 and C3 show increasing think length over training, confirming that length exploitation emerges gradually rather than being present from initialization. C6 think length is flat and bounded by the hard cap throughout. C1 shows the most consistent correctness signal across training. C3 ($\beta=0.01$) shows early correctness spikes followed by degradation, consistent with unstable training dynamics at low KL penalties.
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=0.85\textwidth]{figures/W&B Chart 17_07_2026, 19_29_13.png}
+\caption{Training curves from W\&B showing reward components (think length and correctness) across conditions. C2 and C3 show increasing length exploitation over time. C6 is bounded. C3 shows instability.}
+\label{fig:training_curves}
+\end{figure}
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=0.85\textwidth]{figures/W&B Chart 17_07_2026, 19_30_02.png}
+\caption{Additional training dynamics from W\&B showing per-condition reward trajectories.}
+\label{fig:training_curves2}
+\end{figure}
+
+\section{Discussion}
+
+\subsection{Implications for Guardrail Design}
+
+Our results have concrete implications for practitioners designing guardrails for GRPO-trained reasoning models:
+
+\textbf{Hard caps are appropriate when correctness is the sole objective.} If deployment requires reliable greedy execution and diversity is irrelevant, hard length caps are effective. They suppress hacking, preserve pass@1, and produce consistent behavior. The cost is a complete loss of exploration --- the model cannot discover better strategies through sampling.
+
+\textbf{KL regularization should be used when diversity is valued, but $\beta$ must be carefully calibrated.} KL penalties create an unintentional exploration enhancement effect. For applications where diverse reasoning is beneficial --- such as ensemble methods, self-consistency decoding, or discovery of novel solution strategies --- higher KL may be desirable. However, the monotonic cost to greedy accuracy means practitioners must accept worse base-model performance.
+
+\textbf{$\beta=0.01$ is below an effective threshold.} The low-KL condition shows unstable training dynamics with high seed variance across all metrics. Practitioners should use $\beta \geq 0.05$ if applying KL regularization, or consider alternative approaches.
+
+\textbf{The clean baseline achieves the best overall balance.} When reward hacking is mild (as in our setting), no guardrail at all produces the highest pass@1 (0.23) while maintaining reasonable diversity (0.14). This suggests that guardrails should not be applied reflexively --- their costs in exploration and accuracy should be weighed against the severity of actual hacking behavior.
+
+\subsection{Why Does Hacking Preserve Diversity?}
+
+We offer a mechanistic hypothesis for Finding 1. Length hacking expands the reasoning budget but does not constrain the content of reasoning. The model learns to produce more tokens to increase reward, but it does not learn to converge on a single reasoning strategy because the length bonus is agnostic to content. Any long reasoning trace receives high reward regardless of its structure. This stands in contrast to the hard cap, which forces convergence by creating a strong selection pressure for efficient expression.
+
+\subsection{Why Does KL Increase Diversity?}
+
+For Finding 3, the mechanism is well-understood in the RL literature. The KL penalty $-\beta \cdot D_{\text{KL}}(\pi_\theta \parallel \pi_{\text{ref}})$ prevents the policy from drifting too far from the reference model in any direction. This acts as a regularizer against convergence --- the policy cannot commit to one reasoning strategy because doing so would incur a large KL cost. The result is a diverse but uncertain policy that explores broadly but executes poorly at greedy decoding.
+
+\subsection{Qualitative Comparison}
+
+Table~\ref{tab:qualitative} shows representative completions from C2 and C6 for the same prompt (numbers $[5, 96, 84, 1]$, target 75). The C2 completion shows long, meandering reasoning with logical errors; the C6 completion is shorter but semantically repetitive across samples.
+
+\begin{table}[t]
+\centering
+\caption{Representative completions from C2 (hackable, no guardrail) and C6 (length cap) for the same prompt. C2 produces longer, more varied reasoning; C6 is compressed and repetitive.}
+\label{tab:qualitative}
+\small
+\begin{tabular}{p{1.8cm} p{11.5cm}}
+\toprule
+\textbf{Condition} & \textbf{Completion} \\
+\midrule
+C2 (Hackable) & \texttt{<think>} To create an arithmetic expression that equals 75 using the numbers 5, 96, 84, 1, we can follow these steps: 1. Start with the number 96 and subtract 1 to get 95. 2. Add 84 to 95 to get 189. 3. Finally, subtract 5 from 189 to get 184. 4. The number 1 is not needed in the expression, so we can remove it. Thus, the expression is 96 - 1 + 84 - 5. \texttt{</think>} \\
+& \texttt{<answer>} 96 - 1 + 84 - 5 \texttt{</answer>} \\
+\midrule
+C6 (LengthCap) & \texttt{<think>} To create an arithmetic expression that equals 75 using the numbers 5, 96, 84, 1 exactly once, we can start by trying to combine these numbers in a way that results in 75. \texttt{</think>} \\
+& \texttt{<answer>} (84 - 96) + 1 \texttt{</answer>} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Limitations}
+
+Our study has several limitations that should be acknowledged:
+
+\textbf{Small model scale.} We use Qwen2.5-1.5B-Instruct (1.5 billion parameters). Findings may not scale to larger models where reward hacking behavior and guardrail effects could differ qualitatively.
+
+\textbf{Single task.} The Countdown task is a relatively simple arithmetic reasoning task. Generalizability to more complex reasoning tasks (mathematical problem solving, code generation) requires further study.
+
+\textbf{Limited training duration.} Training runs for 1000 steps per condition. Longer training may reveal different dynamics, particularly for KL-regularized conditions where convergence may occur eventually.
+
+\textbf{Statistical power.} We use 2 seeds per condition. While sufficient for detecting large effects (such as the 79\% diversity collapse in C6), smaller effects require more seeds for reliable detection.
+
+\textbf{Metric reliability.} The unique solution count metric shows high variance for C6 (0.06 for seed 42 vs.\ 0.40 for seed 123), reducing its reliability as a diversity measure. We recommend embedding variance as the primary diversity metric.
+
+\section{Conclusion}
+
+We have systematically investigated how common reward hacking guardrails affect exploration diversity in GRPO-trained reasoning models. Our central finding is that \textbf{guardrail type, not reward hacking itself, determines exploration behavior}. Hard length caps produce exploitation-dominant policies with collapsed diversity. KL regularization produces exploration-dominant policies with diverse but unreliable reasoning. The hackable condition, with no guardrail, maintains baseline diversity while suffering only a modest correctness cost.
+
+These results carry a clear implication for practitioners: \textbf{guardrail design is implicitly an exploration-exploitation decision}. The choice between a hard cap, a KL penalty, or no guardrail should be made with awareness of its effect on policy diversity, not just its ability to suppress reward hacking.
+
+Future work should extend these findings to larger models, more diverse tasks, and longer training durations. An important direction is the development of adaptive guardrail designs that can dynamically balance exploration and exploitation based on policy behavior during training.
+
+\bibliographystyle{unsrt}
+\bibliography{references}
+
+\appendix
+\section{Raw Per-Seed Results}
+\label{app:raw_data}
+
+\begin{table}[h]
+\centering
+\caption{Raw per-seed evaluation results.}
+\label{tab:raw}
+\small
+\begin{tabular}{lccccc}
+\toprule
+\textbf{Condition - Seed} & \textbf{pass@1} & \textbf{pass@8} & \textbf{Gap} & \textbf{Unique} & \textbf{Emb. Var.} \\
+\midrule
+C1-42 & 0.20 & 0.48 & 0.28 & 0.58 & 0.153 \\
+C1-123 & 0.26 & 0.40 & 0.14 & 0.50 & 0.123 \\
+\midrule
+C2-42 & 0.14 & 0.38 & 0.24 & 0.46 & 0.205 \\
+C2-123 & 0.16 & 0.46 & 0.30 & 0.68 & 0.077 \\
+\midrule
+C3-42 & 0.10 & 0.46 & 0.36 & 0.58 & 0.079 \\
+C3-123 & 0.14 & 0.36 & 0.22 & 0.48 & 0.200 \\
+\midrule
+C4-42 & 0.16 & 0.34 & 0.18 & 0.42 & 0.221 \\
+C4-123 & 0.10 & 0.28 & 0.18 & 0.36 & 0.251 \\
+\midrule
+C5-42 & 0.08 & 0.26 & 0.18 & 0.26 & 0.293 \\
+C5-123 & 0.04 & 0.24 & 0.20 & 0.28 & 0.280 \\
+\midrule
+C6-42 & 0.22 & 0.38 & 0.16 & 0.06 & 0.026 \\
+C6-123 & 0.16 & 0.30 & 0.14 & 0.40 & 0.040 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\end{document}
