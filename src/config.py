@@ -190,6 +190,12 @@ class TrainingConfig(BaseModel):
     bf16: bool = Field(default=True)
     beta: float = Field(default=0.0, ge=0.0, description="KL coefficient; 0.0 = no KL")
     max_completion_length: Optional[int] = Field(default=None)
+    gradient_checkpointing: bool = Field(
+        default=False, description="Trade compute for activation memory."
+    )
+    compile_model: bool = Field(
+        default=False, description="Opt-in torch.compile() for the policy model."
+    )
 
     @model_validator(mode="after")
     def check_precision_flags(self) -> "TrainingConfig":
@@ -421,7 +427,12 @@ class ExperimentConfig(BaseModel):
         path = Path(path)
         path.parent.mkdir(parents=True, exist_ok=True)
         with open(path, "w", encoding="utf-8") as f:
-            yaml.dump(self.to_dict(), f, default_flow_style=False, sort_keys=False)
+            yaml.dump(
+                self.model_dump(mode="json"),
+                f,
+                default_flow_style=False,
+                sort_keys=False,
+            )
         logger.info("Saved config to %s", path)
 
 

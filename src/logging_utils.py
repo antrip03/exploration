@@ -65,8 +65,8 @@ class ExperimentLogger:
         if os.environ.get("KAGGLE_KERNEL_RUN_TYPE"):
             os.environ.setdefault("WANDB_MODE", "offline")
 
-        seed = getattr(self.cfg.training, 'seed', 123)
-        version = getattr(self.log_cfg, 'run_version', 'v10')
+        seed = getattr(self.cfg.training, 'seed', 456)
+        version = getattr(self.log_cfg, 'run_version', 'v28')
         run_id = f"{self.cfg.condition_id}-s{seed}-{version}"
 
         try:
@@ -99,7 +99,7 @@ class ExperimentLogger:
     def _setup_csv(self) -> None:
         csv_path = Path(self.log_cfg.log_dir) / f"{self.cfg.condition_id}_metrics.csv"
         csv_path.parent.mkdir(parents=True, exist_ok=True)
-        self._csv_file = open(csv_path, "w", newline="", encoding="utf-8")
+        self._csv_file = open(csv_path, "w+", newline="", encoding="utf-8")
         self._csv_writer = csv.DictWriter(self._csv_file, fieldnames=["step"])
         self._csv_writer.writeheader()
         self._csv_fields = ["step"]

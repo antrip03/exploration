@@ -16,7 +16,6 @@ from src.prompts import extract_answer, extract_think, parse_model_output
 
 logger = logging.getLogger(__name__)
 RewardFunction = Callable[..., list[float]]
-_DEBUG_PRINTS = 0
 
 _ALLOWED_BINOPS = {
     ast.Add: operator.add,
@@ -238,11 +237,6 @@ def compute_reward_components(
             numbers,
         )
     )
-    if _DEBUG_PRINTS < 5:
-        print("Extracted answer:", expression)
-        print("Target:", answer)
-        print("Numbers:", numbers)
-        print("Correct:", correct)
 
     return {
         "correctness": config.correctness_weight if correct else 0.0,
@@ -317,18 +311,6 @@ def _make_reward_fn(cfg: RewardConfig, tokenizer: Any = None, include_length: bo
         totals = []
         for i, completion in enumerate(completions):
             text = _completion_text(completion)
-
-            global _DEBUG_PRINTS
-            if _DEBUG_PRINTS < 5:
-                print("\n" + "=" * 80)
-                print(f"Completion #{_DEBUG_PRINTS + 1}")
-                print(text)
-                print("=" * 80)
-                parsed = parse_model_output(text)
-                print("has_think:", parsed.has_think)
-                print("has_answer:", parsed.has_answer)
-                print("well_formed:", parsed.is_well_formed)
-                _DEBUG_PRINTS += 1
             ground_truth = answer_values[i] if answer_values[i] is not None else target_values[i]
             if ground_truth is None:
                 raise ValueError("Reward function requires dataset column 'answer' or 'target'")

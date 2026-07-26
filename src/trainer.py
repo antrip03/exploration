@@ -82,6 +82,10 @@ class GRPOExperimentTrainer:
         import torch
         from transformers import AutoModelForCausalLM, AutoTokenizer
 
+        if torch.cuda.is_available():
+            torch.backends.cuda.matmul.allow_tf32 = True
+            torch.backends.cudnn.allow_tf32 = True
+
         if self.cfg.model.ref_model != self.cfg.model.name:
             raise ValueError(
                 "This study requires ref_model to equal the untouched base model; "
@@ -91,7 +95,7 @@ class GRPOExperimentTrainer:
             "revision": self.cfg.model.revision,
             "trust_remote_code": self.cfg.model.trust_remote_code,
         }
-        self.tokenizer = AutoTokenizer.from_pretrained(self.cfg.model.name, **common)
+        self.tokenizer = AutoTokenizer.from_pretrained(self.cfg.model.name, use_fast=True, **common)
         self.tokenizer.padding_side = "left"
         if self.tokenizer.pad_token_id is None:
             self.tokenizer.pad_token = self.tokenizer.eos_token
@@ -111,6 +115,12 @@ class GRPOExperimentTrainer:
             except Exception as exc:
                 logger.warning("FlashAttention 2 unavailable (%s); forcing eager attention", exc)
                 attn_impl = "eager"
+
+        if attn_impl != "flash_attention_2":
+            logger.warning(
+                "Flash Attention 2 not available — training will be significantly slower. "
+                "Install flash-attn for 2-3x speedup."
+            )
 
         try:
             self.model = AutoModelForCausalLM.from_pretrained(
@@ -144,8 +154,15 @@ class GRPOExperimentTrainer:
 
         self.model.eval()
         self.model.config.use_cache = False
+        if self.cfg.training.gradient_checkpointing:
+            self.model.gradient_checkpointing_enable()
+            logger.info("Gradient checkpointing enabled")
+        if self.cfg.training.compile_model:
+            logger.info("Compiling model with torch.compile...")
+            self.model = torch.compile(self.model)
+            logger.info("Model compiled")
         self._reward_fn = get_reward_fn(self.cfg.reward, tokenizer=self.tokenizer)
-        logger.info("Model loaded on %s", device_info)
+        logger.info("Model loaded on %s (dtype=%s)", device_info, self._torch_dtype())
         self.log_model_info()
 
     def _build_lora_config(self) -> Any:
@@ -196,6 +213,7 @@ class GRPOExperimentTrainer:
             max_grad_norm=t.max_grad_norm,
             seed=t.seed,
             dataloader_num_workers=t.dataloader_num_workers,
+            dataloader_pin_memory=True,
             remove_unused_columns=False,
             num_generations=t.num_generations,
             temperature=t.temperature,

@@ -15,19 +15,20 @@ image = (
         "transformers==4.53.2",
         "tensorboard",
         "trl==0.19.1",
-        "accelerate",
-        "datasets",
-        "peft",
-        "wandb",
-        "bitsandbytes",
-        "sentencepiece",
-        "huggingface_hub[cli]",
-        "ninja",
-        "packaging",
-        "pyyaml",
-        "pydantic>=2",
-        "sentence-transformers>=3.0.0",
+        "accelerate==1.14.0",
+        "datasets==5.0.0",
+        "peft==0.19.1",
+        "wandb==0.28.0",
+        "bitsandbytes==0.49.2",
+        "sentencepiece==0.2.1",
+        "huggingface_hub[cli]==0.36.2",
+        "ninja==1.13.0",
+        "packaging==26.2",
+        "pyyaml==6.0.3",
+        "pydantic==2.13.4",
+        "sentence-transformers==5.6.0",
         "numpy>=1.26.0",
+        "safetensors==0.8.0",
     ])
     .run_commands(
         "pip install "
@@ -38,10 +39,44 @@ image = (
     .add_local_dir(".", remote_path="/root/project")
 )
 
+CHECKPOINT_REPO_MAP = {
+    ("c1_baseline", 42):    "antrip03/grpo-c1_baseline-s42",
+    ("c1_baseline", 123):   "antrip03/grpo-c1_baseline-s123",
+    ("c1_baseline", 3):     "antrip03/grpo-c1_baseline-s3",
+    ("c2_hackable", 42):    "antrip03/grpo-c2_hackable-s42",
+    ("c2_hackable", 123):   "antrip03/grpo-c2_hackable-s123",
+    ("c2_hackable", 3):     "antrip03/grpo-c2_hackable-s3",
+    ("c3_kl_low", 42):      "antrip03/grpo-c3_kl_low",
+    ("c3_kl_low", 123):     "antrip03/grpo-c3_kl_low-s123",
+    ("c3_kl_low", 3):       "antrip03/grpo-c3_kl_low-s3",
+    ("c4_kl_med", 42):      "antrip03/grpo-c4_kl_med",
+    ("c4_kl_med", 123):     "antrip03/grpo-c4_kl_med-s123",
+    ("c4_kl_med", 3):       "antrip03/grpo-c4_kl_med-s3",
+    ("c5_kl_high", 42):     "antrip03/grpo-c5_kl_high",
+    ("c5_kl_high", 123):    "antrip03/grpo-c5_kl_high-s123",
+    ("c5_kl_high", 3):      "antrip03/grpo-c5_kl_high-s3",
+    ("c6_length_cap", 42):  "antrip03/grpo-c6_length_cap",
+    ("c6_length_cap", 123): "antrip03/grpo-c6_length_cap-s123",
+    ("c6_length_cap", 3):   "antrip03/grpo-c6_length_cap-s3",
+    # Seed 456
+    ("c1_baseline", 456):        "antrip03/grpo-c1_baseline-s456",
+    ("c2_hackable", 456):        "antrip03/grpo-c2_hackable-s456",
+    ("c3_kl_low", 456):          "antrip03/grpo-c3_kl_low-s456",
+    ("c4_kl_med", 456):          "antrip03/grpo-c4_kl_med-s456",
+    ("c5_kl_high", 456):         "antrip03/grpo-c5_kl_high-s456",
+    ("c6_length_cap", 456):      "antrip03/grpo-c6_length_cap-s456",
+    ("c7_kl_cap_combined", 456): "antrip03/grpo-c7_kl_cap_combined-s456",
+
+    # Length cap sweep (all trained at seed 456)
+    ("c6_length_cap_45", 456):   "antrip03/grpo-c6_length_cap_45-s456",
+    ("c6_length_cap_100", 456):  "antrip03/grpo-c6_length_cap_100-s456",
+    ("c6_length_cap_128", 456):  "antrip03/grpo-c6_length_cap_128-s456",
+}
+
 
 @app.function(
     gpu="A10G",
-    timeout=60 * 60 * 3,
+    timeout=60 * 60 * 6,
     image=image,
     volumes={"/root/.cache/huggingface": model_cache},
     secrets=[
@@ -50,48 +85,17 @@ image = (
     ],
 )
 def train(config_name: str, overrides: list[str] | None = None):
-    import subprocess
-    import torch
+    import os
     import time
-    from pathlib import Path
-
-    print("=" * 80)
-    print("MODAL ENVIRONMENT")
-    print("=" * 80)
-
-    print(subprocess.check_output(["nvidia-smi"], text=True))
-
-    print("Torch:", torch.__version__)
-    print("CUDA:", torch.version.cuda)
-    print("cuDNN:", torch.backends.cudnn.version())
-    print("GPU:", torch.cuda.get_device_name(0))
-    print("Capability:", torch.cuda.get_device_capability(0))
-    print("BF16:", torch.cuda.is_bf16_supported())
-    print("TF32:", torch.backends.cuda.matmul.allow_tf32)
-
-    print("flash_sdp:", torch.backends.cuda.flash_sdp_enabled())
-    print("mem_sdp:", torch.backends.cuda.mem_efficient_sdp_enabled())
-    print("math_sdp:", torch.backends.cuda.math_sdp_enabled())
-
-    for pkg in ("flash_attn", "triton", "xformers"):
-        try:
-            m = __import__(pkg)
-            print(pkg, m.__version__)
-        except Exception as e:
-            print(pkg, e)
-
     workdir = Path("/root/project")
-    cmd = [
-        "python",
-        "scripts/train.py",
-        "--config",
-        f"configs/{config_name}.yaml",
-    ]
+    os.environ.setdefault("WANDB_PROJECT", "grpo-reward-hacking")
+    cmd = ["python", "scripts/train.py", "--config", f"configs/{config_name}.yaml"]
     if overrides:
         cmd.extend(overrides)
-
     start = time.time()
-    subprocess.run(cmd, cwd=workdir, check=True)
+    result = subprocess.run(cmd, cwd=workdir)
+    if result.returncode != 0:
+        raise RuntimeError(f"Training failed with exit code {result.returncode}")
     print(f"Total wall time: {time.time() - start:.1f}s")
 
 
@@ -106,16 +110,13 @@ def train(config_name: str, overrides: list[str] | None = None):
     ],
 )
 def evaluate(config_name: str, k: int = 8, seed: int = 42):
-    import os
     workdir = Path("/root/project")
-
-    hf_username = os.environ.get("HF_USERNAME", "antrip03")
-    repo_id = f"{hf_username}/grpo-{config_name}-s{seed}"
-    checkpoint_dir = workdir / "outputs" / config_name / "checkpoint-final"
+    repo_id = CHECKPOINT_REPO_MAP[(config_name, seed)]
+    checkpoint_dir = workdir / "outputs" / f"{config_name}_s{seed}" / "checkpoint-final"
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
 
     print(f"Downloading checkpoint from {repo_id}...")
-    subprocess.run([
+    result = subprocess.run([
         "python", "-c",
         f"""
 from huggingface_hub import snapshot_download
@@ -126,22 +127,40 @@ snapshot_download(
 )
 print("Download complete.")
 """
-    ], cwd=workdir, check=True)
+    ], cwd=workdir, capture_output=True, text=True)
+    print("DOWNLOAD STDOUT:", result.stdout)
+    print("DOWNLOAD STDERR:", result.stderr[-2000:])
+    if result.returncode != 0:
+        raise RuntimeError(f"Download failed for {repo_id}:\n{result.stderr}")
 
-    print(f"Running evaluation for {config_name} with k={k}...")
-    subprocess.run([
+    print(f"Running evaluation for {config_name} seed={seed} k={k}...")
+    result = subprocess.run([
         "python", "scripts/evaluate.py",
         "--config", f"configs/{config_name}.yaml",
         "--checkpoint", str(checkpoint_dir),
         "--k", str(k),
-    ], cwd=workdir, check=True)
+        "--output_dir", f"outputs/eval_results/{config_name}_s{seed}",
+    ], cwd=workdir, capture_output=True, text=True)
+    print("EVAL STDOUT:", result.stdout)
+    print("EVAL STDERR:", result.stderr[-2000:])
+    if result.returncode != 0:
+        raise RuntimeError(f"Evaluation failed for {config_name} seed={seed}:\n{result.stderr[-2000:]}")
 
-    return {"config_name": config_name, "seed": seed, "k": k, "repo_id": repo_id}
+    metrics_lines = [
+        line.strip() for line in result.stdout.splitlines()
+        if ":" in line and not line.startswith("=")
+    ]
+    return {
+        "config_name": config_name,
+        "seed": seed,
+        "repo_id": repo_id,
+        "metrics_output": "\n".join(metrics_lines),
+    }
 
 
 @app.function(
     gpu="A10G",
-    timeout=60 * 60,
+    timeout=60 * 60 * 2,
     image=image,
     volumes={"/root/.cache/huggingface": model_cache},
     secrets=[
@@ -150,23 +169,18 @@ print("Download complete.")
     ],
 )
 def evaluate_batch(config_names: list[str], k: int = 8, seeds: list[int] | None = None):
-    """Evaluate multiple configs and seeds. Runs each in parallel on separate A100 GPUs."""
     if seeds is None:
         seeds = [42, 123]
-    # Build list of (config_name, seed) pairs
     jobs = [(cn, sd) for cn in config_names for sd in seeds]
-    print(f"Launching {len(jobs)} evaluations in parallel on A100 GPUs...")
-    for cn, sd in jobs:
-        print(f"  {cn:25s} seed={sd}")
-    # Launch all evaluations in parallel via spawn
+    print(f"Launching {len(jobs)} evaluations in parallel...")
     futures = [evaluate.spawn(config_name=cn, k=k, seed=sd) for cn, sd in jobs]
-    # Collect results
     outputs = [f.get() for f in futures]
     print("\n" + "=" * 70)
     print("BATCH EVALUATION COMPLETE")
     print("=" * 70)
     for o in outputs:
-        print(f"  {o['config_name']:25s} (seed={o['seed']}) -> {o['repo_id']}")
+        print(f"\n--- {o['config_name']} seed={o['seed']} ---")
+        print(o['metrics_output'])
     print("=" * 70)
     return outputs
 
@@ -181,16 +195,13 @@ def evaluate_batch(config_names: list[str], k: int = 8, seeds: list[int] | None 
 def smoke_test():
     import torch
     from transformers import AutoModelForCausalLM, AutoTokenizer
-
     print("GPU:", torch.cuda.get_device_name(0))
     print("CUDA:", torch.version.cuda)
-
     try:
         import flash_attn
         print("FlashAttention:", flash_attn.__version__)
     except Exception as e:
         raise RuntimeError(f"FlashAttention unavailable: {e}")
-
     tokenizer = AutoTokenizer.from_pretrained("Qwen/Qwen2.5-1.5B-Instruct")
     model = AutoModelForCausalLM.from_pretrained(
         "Qwen/Qwen2.5-1.5B-Instruct",
@@ -198,7 +209,7 @@ def smoke_test():
         attn_implementation="flash_attention_2",
         device_map="cuda",
     )
-    print("Model loaded. Attention:", model.config._attn_implementation)
+    print("Model loaded.")
     inputs = tokenizer("What is 2 + 2?", return_tensors="pt").to(model.device)
     outputs = model.generate(**inputs, max_new_tokens=16)
     print(tokenizer.decode(outputs[0]))
@@ -207,7 +218,7 @@ def smoke_test():
 @app.local_entrypoint()
 def main(
     config_name: str = "c2_hackable",
-    max_steps: int = 500,
+    max_steps: int = 1000,
     evaluate_only: bool = False,
     k: int = 8,
     seed: int = 42,

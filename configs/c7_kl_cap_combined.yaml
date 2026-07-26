@@ -1,0 +1,21 @@
+defaults:
+  - base
+
+training:
+  output_dir: "outputs/c7_kl_cap_combined"
+  beta: 0.05
+  max_steps: 1000
+
+reward:
+  type: "guardrailed"
+  correctness_weight: 1.0
+  length_bonus_max: 0.5
+  length_bonus_ceiling: 512
+  format_bonus: 0.15
+  hard_length_cap: true
+  hard_length_cap_tokens: 65
+
+experiment:
+  condition_id: "c7_kl_cap_combined"
+  description: "Combined guardrail: KL beta=0.05 + hard length cap=65 tokens"
+  tags: ["c7", "combined-guardrail"]

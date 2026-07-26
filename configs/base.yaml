@@ -13,6 +13,10 @@ model:
   max_length: 2048
 
 # ── LoRA ───────────────────────────────────────────────────
+# NOTE: target_modules covers all 7 projections. Restricting to attention-only
+# (q/k/v/o_proj) would train faster, but must NOT be changed for C1-C6 —
+# it would make trainable-parameter counts (and thus results) incomparable
+# across conditions. Only consider it for a new, separately-labeled condition.
 lora:
   enabled: true
   r: 16
@@ -55,6 +59,8 @@ training:
   bf16: true
   beta: 0.0
   max_completion_length: 256
+  gradient_checkpointing: false
+  compile_model: false
 
 # ── Reward ─────────────────────────────────────────────────
 reward:

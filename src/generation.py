@@ -49,6 +49,7 @@ def _generate_batch_once(
     kwargs.update(
         pad_token_id=tokenizer.pad_token_id,
         eos_token_id=tokenizer.eos_token_id,
+        use_cache=True,
     )
     with torch.inference_mode():
         output_ids = model.generate(**encoded, **kwargs)
