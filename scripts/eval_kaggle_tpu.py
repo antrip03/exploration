@@ -84,15 +84,56 @@ def ensure_dependencies() -> None:
     )
 
 
+_LIBTPU_INDEX = "https://storage.googleapis.com/libtpu-releases/index.html"
+
+
+def _install_torch_xla() -> None:
+    """Install torch_xla pinned to the already-installed torch version.
+
+    Kaggle's TPU image does not always ship torch_xla preinstalled. We pin the
+    exact torch version so pip has no reason to touch the already-imported
+    torch package mid-process (upgrading torch under an already-running
+    interpreter is how you get segfaults, not a working TPU).
+    """
+    import torch
+
+    torch_version = torch.__version__.split("+")[0]
+    logger.info("torch_xla not found; installing torch_xla==%s for TPU support ...", torch_version)
+    result = subprocess.run(
+        [
+            sys.executable, "-m", "pip", "install", "-q", "--disable-pip-version-check",
+            f"torch_xla[tpu]=={torch_version}",
+            "-f", _LIBTPU_INDEX,
+        ],
+        capture_output=True, text=True,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(
+            "Automatic torch_xla install failed:\n"
+            f"{result.stderr[-2000:]}\n\n"
+            "Install it manually in a notebook cell (matching your torch version), then re-run:\n"
+            f'  !pip install -q "torch_xla[tpu]=={torch_version}" -f {_LIBTPU_INDEX}\n'
+            "If pip reports a version conflict, no matching torch_xla release exists for "
+            f"torch=={torch_version} — check https://github.com/pytorch/xla/releases for a "
+            "supported pairing and pip install both torch and torch_xla at that pinned version."
+        )
+
+
 def ensure_tpu_runtime() -> Any:
-    """Import torch_xla and return the XLA device, failing loudly if unavailable."""
+    """Import torch_xla (installing it if needed) and return the XLA device."""
+    os.environ.setdefault("PJRT_DEVICE", "TPU")
     try:
         import torch_xla.core.xla_model as xm  # type: ignore
-    except ImportError as exc:
-        raise RuntimeError(
-            "torch_xla is not available. This script requires the Kaggle "
-            "'TPU VM v3-8' accelerator (Settings -> Accelerator -> TPU VM v3-8)."
-        ) from exc
+    except ImportError:
+        _install_torch_xla()
+        try:
+            import torch_xla.core.xla_model as xm  # type: ignore
+        except ImportError as exc:
+            raise RuntimeError(
+                "torch_xla was installed but still failed to import. This usually means the "
+                "notebook's accelerator isn't actually set to a TPU (Settings -> Accelerator -> "
+                "TPU VM v3-8), or a kernel restart is needed — restart the kernel and re-run."
+            ) from exc
     device = xm.xla_device()
     logger.info("Using TPU device: %s", device)
     return device
