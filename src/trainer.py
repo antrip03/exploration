@@ -14,6 +14,20 @@ from src.utils import CheckpointManager
 
 logger = logging.getLogger(__name__)
 
+
+def _resolve_inference_device() -> Any:
+    """Pick the best available device for inference: TPU (XLA) > CUDA > CPU."""
+    try:
+        import torch_xla.core.xla_model as xm  # type: ignore
+
+        return xm.xla_device()
+    except ImportError:
+        pass
+    import torch
+
+    return torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+
 try:
     import transformers  # type: ignore
 except ModuleNotFoundError:  # pragma: no cover - exercised in lightweight local test envs
@@ -281,7 +295,6 @@ class GRPOExperimentTrainer:
         """Load a saved LoRA adapter for inference."""
         from peft import PeftModel
         from transformers import AutoModelForCausalLM, AutoTokenizer
-        import torch
 
         checkpoint = Path(path)
         if not checkpoint.exists():
@@ -294,7 +307,7 @@ class GRPOExperimentTrainer:
             device_map=None,
             low_cpu_mem_usage=True,
         )
-        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        device = _resolve_inference_device()
         base.to(device)
         if (checkpoint / "adapter_config.json").exists():
             self.model = PeftModel.from_pretrained(base, checkpoint)

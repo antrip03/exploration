@@ -1,0 +1,26 @@
+# =============================================================
+# c6_length_cap_3b.yaml  —  Condition 6 (3B): Hackable reward + hard length cap
+# =============================================================
+defaults:
+  - base
+
+experiment:
+  condition_id: "c6_length_cap_3b"
+  description: "Hackable reward + hard reasoning length cap (no KL) (3B base model)"
+  tags: ["hackable", "length-cap", "structural-guardrail", "3b"]
+
+model:
+  name: "Qwen/Qwen2.5-3B-Instruct"
+  ref_model: "Qwen/Qwen2.5-3B-Instruct"
+
+reward:
+  type: "guardrailed"
+  length_bonus_max: 0.5
+  format_bonus: 0.15
+  hard_length_cap: true
+  hard_length_cap_tokens: 70
+
+training:
+  output_dir: "outputs/c6_length_cap_3b"
+  beta: 0.0
+  seed: 42

@@ -71,6 +71,15 @@ CHECKPOINT_REPO_MAP = {
     ("c6_length_cap_45", 456):   "antrip03/grpo-c6_length_cap_45-s456",
     ("c6_length_cap_100", 456):  "antrip03/grpo-c6_length_cap_100-s456",
     ("c6_length_cap_128", 456):  "antrip03/grpo-c6_length_cap_128-s456",
+
+    # 3B base model sweep (all trained at seed 42)
+    ("c1_baseline_3b", 42):        "antrip03/grpo-c1_baseline_3b-s42",
+    ("c2_hackable_3b", 42):        "antrip03/grpo-c2_hackable_3b-s42",
+    ("c3_kl_low_3b", 42):          "antrip03/grpo-c3_kl_low_3b-s42",
+    ("c4_kl_med_3b", 42):          "antrip03/grpo-c4_kl_med_3b-s42",
+    ("c5_kl_high_3b", 42):         "antrip03/grpo-c5_kl_high_3b-s42",
+    ("c6_length_cap_3b", 42):      "antrip03/grpo-c6_length_cap_3b-s42",
+    ("c7_kl_cap_combined_3b", 42): "antrip03/grpo-c7_kl_cap_combined_3b-s42",
 }
 
 

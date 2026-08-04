@@ -1,0 +1,24 @@
+# =============================================================
+# c5_kl_high_3b.yaml  —  Condition 5 (3B): Hackable reward + KL β=0.1
+# =============================================================
+defaults:
+  - base
+
+experiment:
+  condition_id: "c5_kl_high_3b"
+  description: "Hackable reward + KL regularization, beta=0.1 (strong) (3B base model)"
+  tags: ["hackable", "kl-regularization", "beta-sweep", "3b"]
+
+model:
+  name: "Qwen/Qwen2.5-3B-Instruct"
+  ref_model: "Qwen/Qwen2.5-3B-Instruct"
+
+reward:
+  type: "guardrailed"
+  length_bonus_max: 0.5
+  format_bonus: 0.15
+
+training:
+  output_dir: "outputs/c5_kl_high_3b"
+  beta: 0.1
+  seed: 42

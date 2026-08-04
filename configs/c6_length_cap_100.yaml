@@ -1,5 +1,5 @@
 # =============================================================
-# c6_length_cap.yaml  —  Condition 6: Hackable reward + hard length cap
+# c6_length_cap_100.yaml  —  Condition 6: Hackable reward + hard length cap
 # =============================================================
 defaults:
   - base

@@ -1,0 +1,24 @@
+# =============================================================
+# c1_baseline_3b.yaml  —  Condition 1 (3B): Baseline reward
+# =============================================================
+defaults:
+  - base
+
+experiment:
+  condition_id: "c1_baseline_3b"
+  description: "Baseline reward: answer correctness only, no hacking signals (3B base model)"
+  tags: ["baseline", "control", "3b"]
+
+model:
+  name: "Qwen/Qwen2.5-3B-Instruct"
+  ref_model: "Qwen/Qwen2.5-3B-Instruct"
+
+reward:
+  type: "baseline"
+  length_bonus_max: 0.0
+  format_bonus: 0.15
+
+training:
+  output_dir: "outputs/c1_baseline_3b"
+  beta: 0.0
+  seed: 42

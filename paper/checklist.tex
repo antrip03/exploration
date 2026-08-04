@@ -1,0 +1,85 @@
+\section*{NeurIPS Paper Checklist}
+
+\begin{enumerate}
+
+\item {\bf Claims}
+    \item[] Question: Do the main claims made in the abstract and introduction accurately reflect the paper's contributions and scope?
+    \item[] Answer: \answerYes{}
+    \item[] Justification: The abstract and introduction state each finding scoped exactly to the statistical evidence behind it (seed counts, effect sizes, the $n=3$ exact-test $p$-floor), including the two findings that were revised downward relative to an earlier single-seed pilot (the hard-cap collapse and the C7 leaderboard claim); see Sections 4 and Appendix B for the underlying tests.
+
+\item {\bf Limitations}
+    \item[] Question: Does the paper discuss the limitations of the work performed by the authors?
+    \item[] Answer: \answerYes{}
+    \item[] Justification: The Discussion's Limitations paragraph (Section 5) covers model scale, single-task scope, training duration, seed count and statistical power, the single-seed status of the cap severity sweep, the descriptive-only scope of the metric-correlation analysis, and unique solution count's own seed variance; a separate Broader Impact paragraph discusses the risk of over-trusting a guardrail validated on one seed.
+
+\item {\bf Theory assumptions and proofs}
+    \item[] Question: For each theoretical result, does the paper provide the full set of assumptions and a complete (and correct) proof?
+    \item[] Answer: \answerNA{}
+    \item[] Justification: This is a purely empirical study; the paper contains no theorems, lemmas, or formal proofs.
+
+\item {\bf Experimental result reproducibility}
+    \item[] Question: Does the paper fully disclose all the information needed to reproduce the main experimental results of the paper to the extent that it affects the main claims and/or conclusions of the paper (regardless of whether the code and data are provided or not)?
+    \item[] Answer: \answerYes{}
+    \item[] Justification: Section 3 specifies the base model, LoRA configuration (rank, alpha, dropout, target layers), all GRPO training hyperparameters, the public dataset and evaluation holdout protocol, all seven conditions' reward components (Table 1), the three training seeds, and the GPU used.
+
+\item {\bf Open access to data and code}
+    \item[] Question: Does the paper provide open access to the data and code, with sufficient instructions to faithfully reproduce the main experimental results, as described in supplemental material?
+    \item[] Answer: \answerNo{}
+    \item[] Justification: Code and trained checkpoints are not yet publicly released at submission time. The dataset used is a public HuggingFace dataset (\texttt{Jiayi-Pan/Countdown-Tasks-3to4}), and the full training/evaluation configuration needed to reimplement the pipeline is described in Section 3 and Table 1.
+
+\item {\bf Experimental setting/details}
+    \item[] Question: Does the paper specify all the training and test details (e.g., data splits, hyperparameters, how they were chosen, type of optimizer) necessary to understand the results?
+    \item[] Answer: \answerYes{}
+    \item[] Justification: Section 3 reports the model, LoRA hyperparameters, training steps, batch size, gradient accumulation, learning rate and schedule, GRPO group size, the fixed evaluation holdout (independent of training seed), and per-condition reward configuration in Table 1.
+
+\item {\bf Experiment statistical significance}
+    \item[] Question: Does the paper report error bars suitably and correctly defined or other appropriate information about the statistical significance of the experiments?
+    \item[] Answer: \answerYes{}
+    \item[] Justification: Section 3 (``Seeds and statistics'') and Appendix B state the factor of variability (training seed, $n=3$), the exact non-parametric tests used (Jonckheere-Terpstra, exact permutation, Mann-Whitney), Cohen's $d$ effect sizes reported alongside every $p$-value, and BCa bootstrap 95\% confidence intervals (Appendix B, Table~\ref{tab:bootstrap_ci}), with an explicit statement that the minimum achievable two-sided $p$ at $n=3$ is 0.10 so readers do not over-interpret $p$-values as conventional significance.
+
+\item {\bf Experiments compute resources}
+    \item[] Question: For each experiment, does the paper provide sufficient information on the computer resources (type of compute workers, memory, time of execution) needed to reproduce the experiments?
+    \item[] Answer: \answerNo{}
+    \item[] Justification: Section 3 reports the GPU type used (a single NVIDIA A10G per condition-seed run) but does not report exact wall-clock time or aggregate GPU-hours across the full study.
+
+\item {\bf Code of ethics}
+    \item[] Question: Does the research conducted in the paper conform, in every respect, with the NeurIPS Code of Ethics \url{https://neurips.cc/public/EthicsGuidelines}?
+    \item[] Answer: \answerYes{}
+    \item[] Justification: The work fine-tunes an open-weight language model on a public synthetic arithmetic dataset with no human subjects, personal data, or dual-use application, and raises no departures from the Code of Ethics.
+
+\item {\bf Broader impacts}
+    \item[] Question: Does the paper discuss both potential positive societal impacts and negative societal impacts of the work performed?
+    \item[] Answer: \answerYes{}
+    \item[] Justification: The Broader Impact paragraph in the Discussion notes this is foundational RL-training-dynamics research with no direct deployment or dual-use risk, and flags the specific practical risk that a practitioner treating a guardrail's diversity effect as reliable from a single training run can be wrong roughly one seed in three in our data.
+
+\item {\bf Safeguards}
+    \item[] Question: Does the paper describe safeguards that have been put in place for responsible release of data or models that have a high risk for misuse (e.g., pre-trained language models, image generators, or scraped datasets)?
+    \item[] Answer: \answerNA{}
+    \item[] Justification: No models, datasets, or other assets with a high risk of misuse are released as part of this work.
+
+\item {\bf Licenses for existing assets}
+    \item[] Question: Are the creators or original owners of assets (e.g., code, data, models), used in the paper, properly credited and are the license and terms of use explicitly mentioned and properly respected?
+    \item[] Answer: \answerNo{}
+    \item[] Justification: The base model (Qwen2.5-1.5B-Instruct) and the Countdown dataset (\texttt{Jiayi-Pan/Countdown-Tasks-3to4} on HuggingFace) are both cited with source in Section 3 and the references, but their specific license terms are not individually restated in the paper text.
+
+\item {\bf New assets}
+    \item[] Question: Are new assets introduced in the paper well documented and is the documentation provided alongside the assets?
+    \item[] Answer: \answerNA{}
+    \item[] Justification: The paper does not release a new dataset or model as a packaged, documented asset; the trained LoRA adapters produced during the study are experimental artifacts, not a contribution of the paper.
+
+\item {\bf Crowdsourcing and research with human subjects}
+    \item[] Question: For crowdsourcing experiments and research with human subjects, does the paper include the full text of instructions given to participants and screenshots, if applicable, as well as details about compensation (if any)?
+    \item[] Answer: \answerNA{}
+    \item[] Justification: The paper does not involve crowdsourcing or research with human subjects.
+
+\item {\bf Institutional review board (IRB) approvals or equivalent for research with human subjects}
+    \item[] Question: Does the paper describe potential risks incurred by study participants, whether such risks were disclosed to the subjects, and whether Institutional Review Board (IRB) approvals (or an equivalent approval/review based on the requirements of your country or institution) were obtained?
+    \item[] Answer: \answerNA{}
+    \item[] Justification: The paper does not involve human subjects research.
+
+\item {\bf Declaration of LLM usage}
+    \item[] Question: Does the paper describe the usage of LLMs if it is an important, original, or non-standard component of the core methods in this research? Note that if the LLM is used only for writing, editing, or formatting purposes and does \emph{not} impact the core methodology, scientific rigor, or originality of the research, declaration is not required.
+    \item[] Answer: \answerYes{}
+    \item[] Justification: An LLM-based coding assistant was used beyond writing and formatting: it was used to debug the training/evaluation codebase, to compute and independently cross-check the statistical results reported in Section 4 and Appendix B (correlations, Cohen's $d$, exact permutation and Mann-Whitney tests, BCa bootstrap intervals) against the underlying per-seed logs, and to draft manuscript text. The experimental design, GRPO training runs, and evaluation data collection were carried out by the author's own training pipeline, independent of the LLM. \textbf{[Author: please review and adjust this justification to accurately reflect your own process before submission; this is a first-person disclosure I cannot finalize on your behalf.]}
+
+\end{enumerate}
